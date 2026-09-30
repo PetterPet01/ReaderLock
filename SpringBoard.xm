@@ -363,6 +363,151 @@ static void RLForceReaderForegroundIfNeeded(void) {
     }
 }
 
+#pragma mark - Powercuff
+
+// PowerMode 4 is Powercuff's Heavy profile. RequireLowPowerMode stays off so
+// Heavy does not depend on Low Power Mode. This snapshot is ReaderLock's.
+// YukiPower's state file, Choicy's deny list, and a respring are not used:
+// denying this tweak and restarting SpringBoard would drop the kiosk.
+@interface NSObject (ReaderLockBatterySaver)
++ (id)batterySaver;
+- (BOOL)setPowerMode:(NSInteger)mode error:(NSError **)error;
+@end
+
+static NSString * const RLPowerSnapshotPath = @"/var/mobile/Library/Preferences/com.quan.readerlock.power.plist";
+static NSString * const RLPowercuffDomain = @"com.rpetrich.powercuff";
+static NSString * const RLPowerModeKey = @"PowerMode";
+static NSString * const RLRequireLPMKey = @"RequireLowPowerMode";
+
+static id RLCopyPowercuffPref(NSString *key) {
+    CFPropertyListRef value = CFPreferencesCopyValue((__bridge CFStringRef)key,
+                                                     (__bridge CFStringRef)RLPowercuffDomain,
+                                                     kCFPreferencesCurrentUser,
+                                                     kCFPreferencesCurrentHost);
+    return value ? CFBridgingRelease(value) : nil;
+}
+
+static void RLSetPowercuffPref(NSString *key, id value) {
+    CFPreferencesSetValue((__bridge CFStringRef)key,
+                          value ? (__bridge CFPropertyListRef)value : NULL,
+                          (__bridge CFStringRef)RLPowercuffDomain,
+                          kCFPreferencesCurrentUser,
+                          kCFPreferencesCurrentHost);
+}
+
+static void RLSyncPowercuff(void) {
+    CFPreferencesSynchronize((__bridge CFStringRef)RLPowercuffDomain,
+                             kCFPreferencesCurrentUser,
+                             kCFPreferencesCurrentHost);
+    notify_post("com.rpetrich.powercuff.settingschanged");
+    notify_post("com.rpetrich.powercuff.thermals");
+}
+
+static NSInteger RLLowPowerMode(void) {
+    return NSProcessInfo.processInfo.lowPowerModeEnabled ? 1 : 0;
+}
+
+static BOOL RLSetLowPowerMode(NSInteger mode) {
+    Class saverClass = objc_getClass("_CDBatterySaver");
+    if (!saverClass || ![saverClass respondsToSelector:@selector(batterySaver)]) {
+        NSLog(@"[ReaderLock] _CDBatterySaver unavailable");
+        return NO;
+    }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+    id saver = [saverClass performSelector:@selector(batterySaver)];
+#pragma clang diagnostic pop
+    if (![saver respondsToSelector:@selector(setPowerMode:error:)]) {
+        NSLog(@"[ReaderLock] setPowerMode:error: unavailable");
+        return NO;
+    }
+    NSError *error = nil;
+    BOOL ok = [saver setPowerMode:mode error:&error];
+    NSLog(@"[ReaderLock] setPowerMode:%ld -> %d (%@)", (long)mode, ok, error);
+    return ok;
+}
+
+static NSDictionary *RLReadPowerSnapshot(void) {
+    return [NSDictionary dictionaryWithContentsOfFile:RLPowerSnapshotPath];
+}
+
+static void RLClearPowerSnapshot(void) {
+    [[NSFileManager defaultManager] removeItemAtPath:RLPowerSnapshotPath error:nil];
+}
+
+static BOOL RLWritePowerSnapshot(void) {
+    id mode = RLCopyPowercuffPref(RLPowerModeKey);
+    id require = RLCopyPowercuffPref(RLRequireLPMKey);
+    NSMutableDictionary *snap = [NSMutableDictionary dictionary];
+    snap[@"hadPowerMode"] = @(mode != nil);
+    if (mode) snap[@"oldPowerMode"] = mode;
+    snap[@"hadRequireLPM"] = @(require != nil);
+    if (require) snap[@"oldRequireLPM"] = require;
+    snap[@"oldLowPowerMode"] = @(RLLowPowerMode());
+    snap[@"timestamp"] = @([[NSDate date] timeIntervalSince1970]);
+    return [snap writeToFile:RLPowerSnapshotPath atomically:YES];
+}
+
+// YES means nothing is left to restore. A failed Low Power Mode write keeps
+// the file so the next SpringBoard start can retry just that part.
+static BOOL RLRestorePowerSnapshot(void) {
+    NSDictionary *snap = RLReadPowerSnapshot();
+    if (!snap) return YES;
+
+    if ([snap[@"hadPowerMode"] boolValue]) {
+        RLSetPowercuffPref(RLPowerModeKey, snap[@"oldPowerMode"]);
+    } else {
+        RLSetPowercuffPref(RLPowerModeKey, nil);
+    }
+    if ([snap[@"hadRequireLPM"] boolValue]) {
+        RLSetPowercuffPref(RLRequireLPMKey, snap[@"oldRequireLPM"]);
+    } else {
+        RLSetPowercuffPref(RLRequireLPMKey, nil);
+    }
+    RLSyncPowercuff();
+
+    BOOL lowPowerRestored = YES;
+    NSNumber *oldLowPower = snap[@"oldLowPowerMode"];
+    if ([oldLowPower isKindOfClass:[NSNumber class]] && oldLowPower.integerValue >= 0) {
+        lowPowerRestored = RLSetLowPowerMode(oldLowPower.integerValue);
+    }
+    if (!lowPowerRestored) {
+        NSLog(@"[ReaderLock] Low Power Mode restore failed; keeping %@", RLPowerSnapshotPath);
+        return NO;
+    }
+
+    NSDictionary *onDisk = RLReadPowerSnapshot();
+    id stamp = snap[@"timestamp"];
+    if (stamp && [onDisk[@"timestamp"] isEqual:stamp]) {
+        RLClearPowerSnapshot();
+    }
+    NSLog(@"[ReaderLock] restored Powercuff and Low Power Mode");
+    return YES;
+}
+
+static void RLEngageBatterySaver(void) {
+    if (RLReadPowerSnapshot()) {
+        NSLog(@"[ReaderLock] restoring a leftover power snapshot before a new one");
+        if (!RLRestorePowerSnapshot()) {
+            NSLog(@"[ReaderLock] power snapshot still pending; Powercuff left unchanged");
+            return;
+        }
+    }
+    if (!RLWritePowerSnapshot()) {
+        NSLog(@"[ReaderLock] power snapshot could not be saved; Powercuff and Low Power Mode left unchanged");
+        return;
+    }
+    // Leave Heavy in place if Low Power Mode cannot be turned on. Undoing the
+    // Powercuff write was how a failed Low Power Mode call hid a good one.
+    RLSetPowercuffPref(RLPowerModeKey, @4);
+    RLSetPowercuffPref(RLRequireLPMKey, @NO);
+    RLSyncPowercuff();
+    if (!RLSetLowPowerMode(1)) {
+        NSLog(@"[ReaderLock] Low Power Mode could not be enabled; Powercuff Heavy stays on");
+    }
+    NSLog(@"[ReaderLock] Powercuff Heavy engaged");
+}
+
 #pragma mark - State machine
 
 static void RLAbortEntry(NSString *reason) {
@@ -401,10 +546,12 @@ static void RLBeginReaderMode(RLReaderState requestedMode) {
                     RLAbortEntry([NSString stringWithFormat:@"%@ never became foreground", reader]);
                     return;
                 }
+                RLEngageBatterySaver();
                 RLPublishState(requestedMode);
             });
             return;
         }
+        RLEngageBatterySaver();
         RLPublishState(requestedMode);
     });
 }
@@ -416,6 +563,7 @@ static void RLEndReaderMode(void) {
     RLPublishState(RLReaderStateExiting); // firewall hooks become permissive immediately
     gAuthenticationInProgress = NO;
 
+    (void)RLRestorePowerSnapshot();
     // Radios were not changed. A snapshot here is one left behind by an older build.
     RLRestoreSnapshotAfter(RLReadRecoverySnapshot(), 0);
     RLUnlockSessionReader();
@@ -454,6 +602,8 @@ static void RLRecoverIfNeeded(void) {
     RLPublishState(RLReaderStateOff); // fail-open first
     gAuthenticationInProgress = NO;
     RLUnlockSessionReader();
+    // Power prefs do not need the radio managers, so this is not delayed.
+    (void)RLRestorePowerSnapshot();
 
     if (!snapshot) return;
     NSLog(@"[ReaderLock] recovery snapshot found after SpringBoard restart; restoring system state");

@@ -137,6 +137,12 @@ Radio calls use dynamic class/selector checks. Grayscale creation checks for `CA
 
 Both the 2-finger reader exit and triple-Home SpringBoard exit use device-owner authentication. If it cannot be evaluated, the user can use the 3-finger 8-second emergency exit inside the reader, respring, or reboot. Keeping an authenticated exit in SpringBoard also protects against the reader process having been launched before its injection dylib was loaded. The reader dylib is injected into `com.apple.iBooks` and `com.maplepop.bmsea`.
 
+## Powercuff while the reader is foreground
+
+YukiPower's battery profile writes Powercuff `PowerMode` = 4 (Heavy) and `RequireLowPowerMode` = false, synchronizes that domain, posts `com.rpetrich.powercuff.settingschanged` and `com.rpetrich.powercuff.thermals`, then sets `_CDBatterySaver` power mode to 1. Reader Lock does that only after the chosen reader is foreground, and only after its own snapshot is on disk. Exit and the fail-open constructor write the saved values back, deleting a key that was absent. A failed Low Power Mode restore keeps the snapshot for the next SpringBoard start. A failed Low Power Mode *enable* does not undo Heavy.
+
+YukiPower Ultra also adds every non-keeper tweak dylib to Choicy `globalDeniedTweaks` and resprings with `kill(getpid(), SIGTERM)`. Reader Lock does neither. That deny list would include ReaderLock's own dylibs, and a respring publishes Off, so the kiosk would exit itself. `com.yukipower.state.plist` is not written. If Ultra was already on, the snapshot already says Heavy and Low Power Mode on, so leaving Reader Lock restores that instead of turning Ultra off. Powercuff is not a hard dependency.
+
 ## Areas that require exact-device verification
 
 Private APIs are not contracts. These are the tests that determine whether a particular `.deb` is truly production-ready on a specific iOS 15.x build:
@@ -153,6 +159,7 @@ Private APIs are not contracts. These are the tests that determine whether a par
 10. the reader window has no pre-existing layer filters that are lost after Mono -> OFF.
 11. LocalAuthentication UI is not redirected by the app-launch firewall.
 12. all states recover correctly after a forced SpringBoard restart.
+13. after a session, Powercuff's previous mode and Low Power Mode are back, including when the session ended in a respring. Other tweaks are still injected.
 
 ## Why the CC controls are separate toggles
 

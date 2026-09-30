@@ -30,6 +30,7 @@ MapleRead SE is the default when nothing has been chosen yet. Its bundle id is `
 - share sheet, Safari view controller, document picker, Mail/Message composer and Store product UI from the reader are blocked;
 - external `openURL:` calls from the reader are denied, including web links. A `file:` URL and, in Apple Books, `ibooks` / `itms-books` are left alone. Downloads made by the reader itself are not `openURL` and still work;
 - Airplane Mode, Wi-Fi, and Bluetooth are not changed. Turn on Wi-Fi or cellular before entering if the reader should sync or download. Sign into the reader's account before entering, because a Safari login sheet is still blocked.
+- once the reader is in front, Powercuff is set to its Heavy profile and iOS Low Power Mode is turned on. The previous Powercuff mode and Low Power Mode come back on exit, or on the next SpringBoard start if the phone resprings mid-session. Powercuff is optional; without it, only Low Power Mode changes. This does not disable other tweaks and does not respring by itself. Page turns can feel slower. A download the reader starts in the foreground still uses the network; iOS may defer background refresh.
 
 Critical-ish SpringBoard alerts whose class name includes LowPower, Battery, Thermal, Emergency, SOS or Shutdown are allowed through. `InCallService`, CoreAuth UI and passcode UI are on the launch safety allowlist so emergency/authentication infrastructure is not accidentally redirected.
 
@@ -46,7 +47,7 @@ Either path asks iOS for Touch ID or the device passcode using `LAPolicyDeviceOw
 
 Fail-safe exit: hold **three fingers for 8 seconds inside the reader**. This skips authentication and exists only to prevent lockout if LocalAuthentication is broken or no device passcode is configured. A reboot is the final physical escape because jailbreak enforcement disappears when SpringBoard is no longer running the tweak.
 
-A SpringBoard restart/respring is fail-open: active Reader Lock is deliberately never restored across SpringBoard startup. A full reboot also removes the kiosk enforcement because tweak injection is gone. Version 0.1.4 does not change radios. A recovery snapshot left by 0.1.3 is still restored once, on the next SpringBoard start, because Airplane Mode, Wi-Fi, and Bluetooth are persistent settings and 0.1.3 may have turned them off.
+A SpringBoard restart/respring is fail-open: active Reader Lock is deliberately never restored across SpringBoard startup. A full reboot also removes the kiosk enforcement because tweak injection is gone. Version 0.1.4 and later do not change radios. A recovery snapshot left by 0.1.3 is still restored once, on the next SpringBoard start, because Airplane Mode, Wi-Fi, and Bluetooth are persistent settings and 0.1.3 may have turned them off. A power snapshot from 0.1.5 is restored on that same start, so Powercuff and Low Power Mode do not stay on Heavy after a respring.
 
 ## State machine
 
@@ -62,6 +63,8 @@ ARMING
   |
   +-- failure --> EXITING -> OFF
   |
+  - snapshot Powercuff and Low Power Mode, then set Powercuff Heavy
+  |
   v
 MONO or COLOR
   - app launch firewall active
@@ -74,6 +77,7 @@ MONO or COLOR
   v
 EXITING
   - firewall becomes permissive immediately
+  - restore Powercuff and Low Power Mode from this session's snapshot
   - restore a leftover 0.1.3 radio snapshot, if one is still on disk
   - notify the reader to restore rendering
   v
@@ -149,10 +153,10 @@ Do **not** make the first test with important unsaved work or with no way to reb
 10. Hold two fingers for 2.5s; verify Touch ID/passcode appears.
 11. Cancel authentication once; verify Reader Lock stays active.
 12. Triple-click Home; verify the independent SpringBoard authentication path appears.
-13. Authenticate; verify Reader Lock returns to OFF and the radios are still whatever you set in step 4.
+13. Authenticate; verify Reader Lock returns to OFF, the radios are still whatever you set in step 4, and Low Power Mode is back to what it was before entry.
 14. Enter Reader Mono; verify the reader windows become grayscale.
 15. Exit and verify color returns.
-16. Enter again and deliberately respring; verify the device returns OFF. A recovery plist left by 0.1.3 is restored on that start; 0.1.4 does not write a new one.
+16. Enter again and deliberately respring; verify the device returns OFF and Powercuff / Low Power Mode return to what they were. A radio recovery plist left by 0.1.3 is restored on that start; 0.1.4 and later do not write a new one.
 17. Finally test the three-finger 8-second emergency exit inside the reader.
 18. Only after all of the above, test lock/wake, queued notifications, the Today View gesture, Camera-from-lock-screen, and a full reboot while active. The kiosk does not survive a reboot. Radios stay as you left them.
 
@@ -176,6 +180,8 @@ Useful expected messages:
 - `blocked app launch ... -> com.maplepop.bmsea` or `com.apple.iBooks`
 - `suppressed bulletin ...`
 - `authenticated exit`
+- `Powercuff Heavy engaged`
+- `restored Powercuff and Low Power Mode`
 - `recovery snapshot found after SpringBoard restart`
 
 ## Source layout
@@ -201,15 +207,22 @@ This is deliberately conservative, but several parts are private and must be val
 - `FBSystemServiceOpenApplicationRequest -setBundleIdentifier:` is the central launch firewall hook. A current open-source rootless tweak reports this exact hook working on iPhone 7 / iOS 15.7.7 / Dopamine, making it the strongest compatibility anchor in the project.
 - Home, the app switcher, Reachability, and the Side+Home screenshot chord are handled on `SBHomeHardwareButton` (`singlePressUp:`, `doublePressUp:`, `triplePressUp:`, `longPress:`, `screenshotRecognizerDidRecognize:`). Triple-press is the SpringBoard authenticated exit. Switcher, Control Center, Notification Center, and cover-sheet classes are still private; the foreground watchdog and launch firewall are the fallback if a presentation hook changes.
 - `BBServer` and `SBAlertItemsController` are best-effort suppression paths. ReaderLock hooks `publishBulletin:destinations:`, `publishBulletinRequest:destinations:`, and `_publishBulletinRequest:forSectionID:forDestinations:`, plus both `activateAlertItem:` variants, and hides an already-visible notification list. An iOS point release can still move an alarm through another presentation or audio route, which is why the validation plan tests them.
-- `RadiosPreferences`, `SBWiFiManager`, and `BluetoothManager` are loaded dynamically and guarded with selector checks. 0.1.4 does not call them on entry. They remain only so a recovery snapshot written by 0.1.3 can still be restored. A missing API causes that restore to fail open rather than crash SpringBoard.
+- `RadiosPreferences`, `SBWiFiManager`, and `BluetoothManager` are loaded dynamically and guarded with selector checks. 0.1.4 and later do not call them on entry. They remain only so a recovery snapshot written by 0.1.3 can still be restored. A missing API causes that restore to fail open rather than crash SpringBoard.
+- Powercuff's `PowerMode` / `RequireLowPowerMode` preferences and `_CDBatterySaver -setPowerMode:error:` are private. `PowerMode` 4 is the Heavy value YukiPower writes. If Powercuff is not installed, the preference write has nothing to apply and Low Power Mode is still requested. Neither path disables other tweaks.
 - CoreAnimation's `CAFilter` is private. If unavailable, Mono rendering fails gracefully while the kiosk lock remains active.
 
 ## Recovery file
 
-0.1.4 does not write a radio snapshot. If SpringBoard starts and finds one left by an older build, ReaderLock sets itself OFF first, restores that snapshot after SpringBoard has had time to initialize radio managers, then deletes the file:
+0.1.4 and later do not write a radio snapshot. If SpringBoard starts and finds one left by an older build, ReaderLock sets itself OFF first, restores that snapshot after SpringBoard has had time to initialize radio managers, then deletes the file:
 
 ```
 /var/mobile/Library/Preferences/com.quan.readerlock.recovery.plist
+```
+
+0.1.5 writes a separate power snapshot only after the chosen reader is actually in front, and deletes it after Powercuff and Low Power Mode are restored:
+
+```
+/var/mobile/Library/Preferences/com.quan.readerlock.power.plist
 ```
 
 The chosen reader is a separate file, and it is not deleted on exit:

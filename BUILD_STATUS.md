@@ -1,24 +1,24 @@
 # Build status
 
 Date: 2026-09-30
-Release candidate: 0.1.4
+Release candidate: 0.1.5
 Target: iPhone 7 (A10 / arm64), iOS 15.x, Dopamine rootless / ElleKit.
 
-## What changed from 0.1.3
+## What changed from 0.1.4
 
-Reader Lock no longer enables Airplane Mode or turns Wi-Fi and Bluetooth off. A recovery snapshot left by 0.1.3 is still restored once when SpringBoard loads. The kiosk can open either Apple Books (`com.apple.iBooks`) or MapleRead SE (`com.maplepop.bmsea`). The Control Center button "Use Maple" chooses before entry: highlighted means MapleRead, not highlighted means Books. The default, when that choice has never been saved, is MapleRead. The reader dylib injects into both apps.
+Once the chosen reader is actually in front, Reader Lock sets Powercuff's `PowerMode` to 4 (Heavy) and `RequireLowPowerMode` to false, posts Powercuff's settings and thermal notifications, and turns on iOS Low Power Mode. The previous values, including a Powercuff key that was absent, are saved first in `/var/mobile/Library/Preferences/com.quan.readerlock.power.plist` and written back on exit or on the next SpringBoard start. If that file cannot be saved, Powercuff and Low Power Mode are left alone and the kiosk still starts. This is not YukiPower Ultra: Choicy's tweak deny list is not touched, and SpringBoard is not restarted. Powercuff is not a package dependency. Wi-Fi and cellular are still not changed.
 
-0.1.3's lock-screen behavior is unchanged: Home is passed through while locked, while the cover sheet is visible, and during exit authentication, and launches are not redirected to the reader in that window.
+0.1.4's reader choice and 0.1.3's lock-screen behavior are unchanged.
 
 ## What a local Theos build checks
 
 `make clean package FINALPACKAGE=1` with Theos, the L1ghtmann iOS toolchain, and the iPhoneOS 15.6 SDK produces:
 
-`packages/com.quan.readerlock_0.1.4_iphoneos-arm64.deb`
+`packages/com.quan.readerlock_0.1.5_iphoneos-arm64.deb`
 
 `scripts/verify-deb.sh` then checks that package:
 
-- Debian architecture `iphoneos-arm64` (rootless), version 0.1.4
+- Debian architecture `iphoneos-arm64` (rootless), version 0.1.5
 - `ReaderLockSB.dylib` and `ReaderLockBooks.dylib` are arm64 Mach-O and have `LC_CODE_SIGNATURE`
 - the Mono, Color, and Use Maple Control Center bundles are present and signed the same way
 - every data-archive path is under `/var/jb`
@@ -28,4 +28,4 @@ That is a static package check. It does not run the README's device procedure, a
 
 ## Reproducible binary build
 
-GitHub Actions (`.github/workflows/build.yml`) installs the same pinned toolchain and iPhoneOS 15.6 SDK on `ubuntu-24.04`, runs `make package FINALPACKAGE=1`, runs `scripts/verify-deb.sh`, and uploads the `.deb`. A respring is still required after install. A hard reboot drops tweak enforcement. 0.1.4 does not change radios, so a reboot does not need to restore them. A leftover 0.1.3 snapshot is still only consumed when the tweak actually loads.
+GitHub Actions (`.github/workflows/build.yml`) installs the same pinned toolchain and iPhoneOS 15.6 SDK on `ubuntu-24.04`, runs `make package FINALPACKAGE=1`, runs `scripts/verify-deb.sh`, and uploads the `.deb`. A respring is still required after install. A hard reboot drops tweak enforcement. 0.1.5 does not change radios, so a reboot does not need to restore them. A leftover 0.1.3 radio snapshot, and a 0.1.5 power snapshot, are still only consumed when the tweak actually loads. Heavy limits CPU, so the reader can feel slower. It does not turn the radios off.
