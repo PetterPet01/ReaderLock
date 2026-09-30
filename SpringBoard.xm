@@ -280,6 +280,23 @@ static BOOL RLDeviceIsLocked(void) {
     return valid ? locked : NO;
 }
 
+// The iPhone 7 unlock click is the Home button. Swallowing it while the lock
+// screen is up authenticates and then leaves SpringBoard on the cover sheet.
+static BOOL RLCoverSheetIsVisible(void) {
+    id cover = RLSharedInstance(@"SBCoverSheetPresentationManager");
+    BOOL valid = NO;
+    BOOL visible = RLGetBool(cover, @"isVisible", &valid);
+    if (valid) return visible;
+    valid = NO;
+    visible = RLGetBool(cover, @"isPresented", &valid);
+    return valid && visible;
+}
+
+static BOOL RLPassHomeButtonThrough(void) {
+    if (!RLActive() || gAuthenticationInProgress) return YES;
+    return RLDeviceIsLocked() || RLCoverSheetIsVisible();
+}
+
 static BOOL RLIsSafetyBundle(NSString *bundleIdentifier) {
     if (!bundleIdentifier.length) return NO;
     static NSSet<NSString *> *allow = nil;
@@ -374,7 +391,7 @@ static BOOL RLOpenBooks(void) {
 }
 
 static void RLForceBooksForegroundIfNeeded(void) {
-    if (!RLActive() || gAuthenticationInProgress || RLDeviceIsLocked()) return;
+    if (!RLActive() || gAuthenticationInProgress || RLDeviceIsLocked() || RLCoverSheetIsVisible()) return;
     NSString *front = RLFrontmostBundleIdentifier();
     if (![front isEqualToString:RLBooksBundleIdentifier]) {
         RLOpenBooks();
@@ -486,7 +503,9 @@ static void RLRecoverIfNeeded(void) {
 %hook FBSystemServiceOpenApplicationRequest
 
 - (void)setBundleIdentifier:(NSString *)bundleIdentifier {
-    if (!RLActive() || !bundleIdentifier.length || RLIsSafetyBundle(bundleIdentifier)) {
+    // Stay enforced during the exit-auth sheet, but not while locked. Rewriting a
+    // launch to Books during unlock keeps the cover sheet from dismissing.
+    if (!RLActive() || RLDeviceIsLocked() || RLCoverSheetIsVisible() || !bundleIdentifier.length || RLIsSafetyBundle(bundleIdentifier)) {
         %orig;
         return;
     }
@@ -510,25 +529,25 @@ static void RLRecoverIfNeeded(void) {
 %hook SBHomeHardwareButton
 
 - (void)singlePressUp:(id)press {
-    if (RLActive()) {
-        if (!gAuthenticationInProgress) RLForceBooksForegroundIfNeeded();
+    if (!RLPassHomeButtonThrough()) {
+        RLForceBooksForegroundIfNeeded();
         return;
     }
     %orig;
 }
 
 - (void)doublePressUp:(id)press {
-    if (RLActive()) return;
+    if (!RLPassHomeButtonThrough()) return;
     %orig;
 }
 
 - (void)doubleTapUp:(id)press {
-    if (RLActive()) return;
+    if (!RLPassHomeButtonThrough()) return;
     %orig;
 }
 
 - (void)triplePressUp:(id)press {
-    if (RLActive()) {
+    if (RLActive() && !RLPassHomeButtonThrough()) {
         RLRequestSpringBoardAuthenticatedExit();
         return;
     }
@@ -536,12 +555,12 @@ static void RLRecoverIfNeeded(void) {
 }
 
 - (void)longPress:(id)press {
-    if (RLActive()) return;
+    if (!RLPassHomeButtonThrough()) return;
     %orig;
 }
 
 - (void)screenshotRecognizerDidRecognize:(id)recognizer {
-    if (RLActive()) return;
+    if (!RLPassHomeButtonThrough()) return;
     %orig;
 }
 
@@ -673,7 +692,7 @@ static BOOL RLShouldAllowSystemAlert(id alertItem) {
     static NSArray<NSString *> *safetyFragments = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        safetyFragments = @[@"LowPower", @"Battery", @"Thermal", @"Emergency", @"SOS", @"Shutdown"];
+        safetyFragments = @[@"LowPower", @"Battery", @"Thermal", @"Emergency", @"SOS", @"Shutdown", @"PowerDown", @"PowerOff", @"Restart", @"Reboot", @"Reset"];
     });
     for (NSString *fragment in safetyFragments) {
         if ([name rangeOfString:fragment options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;

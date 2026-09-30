@@ -222,7 +222,8 @@ It is deleted after normal exit. If SpringBoard starts and finds the file, Reade
 ReaderLock intentionally does not try to interfere with:
 
 - sleep/wake via the side button;
-- shutdown/reboot;
+- the lock screen itself: while it is up, Home is delivered normally so an iPhone 7 can finish Touch ID or passcode unlock (Home is swallowed again only after the cover sheet is gone);
+- shutdown/reboot, including power-off, restart, and reset alerts;
 - critical low-battery / thermal / emergency/SOS alert classes;
 - LocalAuthentication UI required to leave Reader Lock.
 
