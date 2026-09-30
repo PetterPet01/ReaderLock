@@ -418,6 +418,7 @@ static void RLUpdateBottomBarVisibility(void);
 static void RLInstallReaderChromeHooks(void);
 static void RLApplyReaderChromeNow(void);
 static void RLRestoreAllReaderChrome(void);
+static BOOL RLReadingScreenIsVisible(void);
 
 static void RLReachabilityChanged(__unused SCNetworkReachabilityRef target, __unused SCNetworkReachabilityFlags flags, __unused void *info) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -499,6 +500,21 @@ static void RLUpdateBottomBarVisibility(void) {
     RLApplySystemStatusBarHidden(YES);
     RLInstallReaderChromeHooks();
     RLApplyReaderChromeNow();
+
+    // The time line is a window of its own, so it would sit on the library too.
+    // MapleRead's open book is the only screen that should show it.
+    if (!RLReadingScreenIsVisible()) {
+        gBottomBarAttachAttempts = 0;
+        if (gBottomBarWindow) gBottomBarWindow.hidden = YES;
+        [gBottomBarTimer invalidate];
+        gBottomBarTimer = nil;
+        static BOOL loggedHide = NO;
+        if (!loggedHide) {
+            loggedHide = YES;
+            NSLog(@"[ReaderLock] bottom line hidden off the book");
+        }
+        return;
+    }
 
     BOOL hasScenes = NO;
     for (UIScene *existing in [UIApplication sharedApplication].connectedScenes) {
@@ -867,6 +883,83 @@ static BOOL RLIsReaderChromeController(id object) {
     return found;
 }
 
+static BOOL RLBookMarkerInWindow(id controller) {
+    const char *keys[] = {"blackStatusBar", "blackStatusBarArea", "pageLabel", "progressLabel"};
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        id view = RLKVC(controller, keys[i]);
+        if ([view isKindOfClass:[UIView class]] && ((UIView *)view).window) return YES;
+    }
+    return NO;
+}
+
+static UIViewController *RLFrontmostController(UIViewController *vc) {
+    for (NSInteger guard = 0; vc && guard < 12; guard++) {
+        UIViewController *presented = vc.presentedViewController;
+        if (presented && !presented.isBeingDismissed) {
+            vc = presented;
+            continue;
+        }
+        if ([vc isKindOfClass:[UINavigationController class]]) {
+            UIViewController *visible = ((UINavigationController *)vc).visibleViewController;
+            if (!visible || visible == vc) break;
+            vc = visible;
+            continue;
+        }
+        if ([vc isKindOfClass:[UITabBarController class]]) {
+            UIViewController *selected = ((UITabBarController *)vc).selectedViewController;
+            if (!selected || selected == vc) break;
+            vc = selected;
+            continue;
+        }
+        break;
+    }
+    return vc;
+}
+
+static UIViewController *RLKeyFrontController(void) {
+    UIWindow *key = nil;
+    UIWindow *fallback = nil;
+    for (UIWindow *window in RLApplicationWindows()) {
+        if ([window isKindOfClass:[RLBottomBarWindow class]]) continue;
+        if (!fallback) fallback = window;
+        if (window.isKeyWindow) {
+            key = window;
+            break;
+        }
+    }
+    if (!key) key = fallback;
+    return RLFrontmostController(key.rootViewController);
+}
+
+static BOOL RLIsOnFrontChain(UIViewController *target) {
+    if (!target) return NO;
+    for (UIViewController *vc = RLKeyFrontController(); vc; vc = vc.parentViewController) {
+        if (vc == target) return YES;
+    }
+    return NO;
+}
+
+static BOOL RLReadingScreenIsVisible(void) {
+    // Apple Books has no MapleRead book-screen marker. Keep its line on every
+    // screen rather than guessing a class name and hiding it during a book.
+    if ([[NSBundle mainBundle].bundleIdentifier isEqualToString:RLBooksBundleIdentifier]) return YES;
+    for (UIViewController *vc = RLKeyFrontController(); vc; vc = vc.parentViewController) {
+        if (RLIsReaderChromeController(vc) && RLBookMarkerInWindow(vc)) return YES;
+    }
+    return NO;
+}
+
+static BOOL gBottomBarRefreshQueued = NO;
+
+static void RLQueueBottomBarRefresh(void) {
+    if (!RLBooksActive() || gBottomBarRefreshQueued) return;
+    gBottomBarRefreshQueued = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        gBottomBarRefreshQueued = NO;
+        RLUpdateBottomBarVisibility();
+    });
+}
+
 static BOOL RLContainsControl(UIView *view, NSInteger depth) {
     if (!view || depth > 6) return NO;
     if ([view isKindOfClass:[UIControl class]]) return YES;
@@ -1111,6 +1204,11 @@ static void RLApplyReaderChrome(id controller) {
             RLLiftNamedFooter(vc, stripTop);
             RLLiftFooterTree(vc.view, stripTop, 0);
         }
+        if ((!gBottomBarWindow || gBottomBarWindow.hidden)
+            && RLIsOnFrontChain(vc)
+            && RLBookMarkerInWindow(vc)) {
+            RLQueueBottomBarRefresh();
+        }
     }
     gChromeDepth--;
 }
@@ -1306,6 +1404,18 @@ static void RLHookApplicationStatusBar(void) {
     %orig;
     if (RLBooksActive()) RLApplyReaderChrome(self);
     else RLRestoreReaderChrome(self);
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    if ([self isKindOfClass:[RLBottomBarController class]]) return;
+    RLQueueBottomBarRefresh();
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+    %orig;
+    if ([self isKindOfClass:[RLBottomBarController class]]) return;
+    RLQueueBottomBarRefresh();
 }
 
 %end

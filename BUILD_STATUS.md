@@ -1,8 +1,12 @@
 # Build status
 
 Date: 2026-10-01
-Release candidate: 0.1.9
+Release candidate: 0.1.10
 Target: iPhone 7 (A10 / arm64), iOS 15.x, Dopamine rootless / ElleKit.
+
+## What changed from 0.1.9
+
+0.1.9 kept the time line up for the whole Reader Lock session, so it covered MapleRead's home-screen controls. The book screen itself was already right. 0.1.10 hides that line unless the open book is the screen in front. Apple Books still shows it on every screen. This has not been run on a phone.
 
 ## What changed from 0.1.8
 
@@ -30,11 +34,11 @@ Once the chosen reader is actually in front, Reader Lock sets Powercuff's `Power
 
 `make clean package FINALPACKAGE=1` with Theos, the L1ghtmann iOS toolchain, and the iPhoneOS 15.6 SDK produces:
 
-`packages/com.quan.readerlock_0.1.9_iphoneos-arm64.deb`
+`packages/com.quan.readerlock_0.1.10_iphoneos-arm64.deb`
 
 `scripts/verify-deb.sh` then checks that package:
 
-- Debian architecture `iphoneos-arm64` (rootless), version 0.1.9
+- Debian architecture `iphoneos-arm64` (rootless), version 0.1.10
 - `ReaderLockSB.dylib` and `ReaderLockBooks.dylib` are arm64 Mach-O and have `LC_CODE_SIGNATURE`
 - the Mono, Color, and Use Maple Control Center bundles are present and signed the same way
 - every data-archive path is under `/var/jb`
