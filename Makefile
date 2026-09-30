@@ -13,7 +13,7 @@ ReaderLockSB_FRAMEWORKS = Foundation UIKit CoreFoundation QuartzCore LocalAuthen
 
 ReaderLockBooks_FILES = Books.xm
 ReaderLockBooks_CFLAGS = -fobjc-arc -ICommon
-ReaderLockBooks_FRAMEWORKS = Foundation UIKit QuartzCore LocalAuthentication
+ReaderLockBooks_FRAMEWORKS = Foundation UIKit QuartzCore LocalAuthentication SystemConfiguration
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 

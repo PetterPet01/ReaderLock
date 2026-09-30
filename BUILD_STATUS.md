@@ -1,8 +1,12 @@
 # Build status
 
 Date: 2026-09-30
-Release candidate: 0.1.6
+Release candidate: 0.1.7
 Target: iPhone 7 (A10 / arm64), iOS 15.x, Dopamine rootless / ElleKit.
+
+## What changed from 0.1.6
+
+While Reader Lock is on, the reader hides Apple's status bar and shows a touch-through line at the bottom: 24-hour time, Wi-Fi or an em dash, and battery percent. Opening Books or MapleRead while Reader Lock is off does not change the status bar. The line does not reserve space in the page.
 
 ## What changed from 0.1.5
 
@@ -18,11 +22,11 @@ Once the chosen reader is actually in front, Reader Lock sets Powercuff's `Power
 
 `make clean package FINALPACKAGE=1` with Theos, the L1ghtmann iOS toolchain, and the iPhoneOS 15.6 SDK produces:
 
-`packages/com.quan.readerlock_0.1.6_iphoneos-arm64.deb`
+`packages/com.quan.readerlock_0.1.7_iphoneos-arm64.deb`
 
 `scripts/verify-deb.sh` then checks that package:
 
-- Debian architecture `iphoneos-arm64` (rootless), version 0.1.6
+- Debian architecture `iphoneos-arm64` (rootless), version 0.1.7
 - `ReaderLockSB.dylib` and `ReaderLockBooks.dylib` are arm64 Mach-O and have `LC_CODE_SIGNATURE`
 - the Mono, Color, and Use Maple Control Center bundles are present and signed the same way
 - every data-archive path is under `/var/jb`

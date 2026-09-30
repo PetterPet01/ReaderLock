@@ -68,6 +68,12 @@ References:
 - https://github.com/nahtedetihw/ShakeItOff
 - https://github.com/nst/iOS-Runtime-Headers/blob/master/PrivateFrameworks/BluetoothManager.framework/BluetoothManager.h
 
+### Bottom line instead of the status bar
+
+The replacement is drawn by `ReaderLockBooks`, which is already injected into `com.apple.iBooks` and `com.maplepop.bmsea`. It appears only while the Darwin state is Mono or Color. Time is a 24-hour `HH:mm` formatter. Battery is `UIDevice` battery monitoring. Wi-Fi is `SCNetworkReachability` on `0.0.0.0`: reachable and not `kSCNetworkReachabilityFlagsIsWWAN`. Anything else, including cellular, is an em dash. The window's `hitTest:withEvent:` returns nil, so page turns pass through.
+
+`prefersStatusBarHidden` on `UIViewController` is not enough, because a subclass override never reaches that implementation. Each view-controller class that implements the method gets its own replacement, which returns hidden only while Reader Lock is on and otherwise calls the saved implementation. `UIStatusBarManager`'s hidden flag and frame are forced the same way so the 20-point bar can collapse. The bottom line does not change safe-area insets. Its color is `secondaryLabelColor`, which follows the system appearance and not a sepia or night page theme.
+
 ### Control Center / Notification Center / Siri / Reachability
 
 On iOS 14 and iOS 17 dumps, `SBUIController` has no `clickedMenuButton`, and `SBAssistantController` has no `handleSiriButtonDownEventFromSource:activationEvent:`. The iPhone 7 Home button is `SBHomeHardwareButton`: single press is swallowed once the cover sheet is gone, double press blocks the switcher even on the lock screen, double-tap blocks Reachability, triple press starts the SpringBoard authenticated exit, and long-press blocks hold-Home Siri. The first `singlePressUp:` while locked, or while the cover sheet is still visible, is forwarded so Touch ID can dismiss the lock screen. A second one inside 0.55 seconds while still locked, or inside 4 seconds after Touch ID has already cleared the lock, is not forwarded. `initialButtonDown:` and `initialButtonUp:` are not hooked. `SBAssistantController -_setVisible:` refuses to show Siri and still allows dismiss.
