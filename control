@@ -1,8 +1,8 @@
 Package: com.quan.readerlock
 Name: ReaderLock
-Version: 0.1.3
+Version: 0.1.4
 Architecture: iphoneos-arm
-Description: One-tap Books-only reader appliance mode with Mono/Color controls, offline isolation, notification suppression, app-launch firewall, authenticated exit, and fail-open recovery.
+Description: One-tap reader appliance for Apple Books or MapleRead SE, with Mono/Color controls, notification suppression, an app-launch firewall, authenticated exit, and fail-open recovery. Wi-Fi and cellular are left alone so the reader can sync.
 Maintainer: Quân / OpenAI-assisted prototype
 Author: Quân / OpenAI-assisted prototype
 Section: Tweaks

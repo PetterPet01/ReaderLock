@@ -19,7 +19,36 @@ static const char * const RLAuthBeginNotification   = "com.quan.readerlock.auth.
 static const char * const RLAuthEndNotification     = "com.quan.readerlock.auth.end";
 
 static NSString * const RLBooksBundleIdentifier = @"com.apple.iBooks";
+static NSString * const RLMapleReadBundleIdentifier = @"com.maplepop.bmsea";
 static NSString * const RLRecoveryPath = @"/var/mobile/Library/Preferences/com.quan.readerlock.recovery.plist";
+static NSString * const RLPreferencePath = @"/var/mobile/Library/Preferences/com.quan.readerlock.plist";
+
+typedef NS_ENUM(NSInteger, RLReaderApp) {
+    RLReaderAppBooks = 0,
+    RLReaderAppMaple = 1,
+};
+
+// Missing preference means MapleRead. The Control Center switch writes "books" or "maple".
+static inline RLReaderApp RLPreferredReader(void) {
+    id value = [NSDictionary dictionaryWithContentsOfFile:RLPreferencePath][@"reader"];
+    if ([value isKindOfClass:[NSString class]] && [value isEqualToString:@"books"]) return RLReaderAppBooks;
+    return RLReaderAppMaple;
+}
+
+static inline NSString *RLBundleIdentifierForReader(RLReaderApp app) {
+    return app == RLReaderAppBooks ? RLBooksBundleIdentifier : RLMapleReadBundleIdentifier;
+}
+
+static inline NSString *RLSelectedReaderBundleIdentifier(void) {
+    return RLBundleIdentifierForReader(RLPreferredReader());
+}
+
+static inline BOOL RLWritePreferredReader(RLReaderApp app) {
+    NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:RLPreferencePath] mutableCopy];
+    if (!prefs) prefs = [NSMutableDictionary dictionary];
+    prefs[@"reader"] = (app == RLReaderAppBooks) ? @"books" : @"maple";
+    return [prefs writeToFile:RLPreferencePath atomically:YES];
+}
 
 static inline BOOL RLStateIsActive(RLReaderState state) {
     return state == RLReaderStateMono || state == RLReaderStateColor;

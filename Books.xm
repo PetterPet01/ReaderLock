@@ -196,12 +196,24 @@ static void RLInstallExitGestures(UIWindow *window) {
     [window addGestureRecognizer:emergency];
 }
 
-#pragma mark - Keep Books self-contained
+#pragma mark - Keep the reader self-contained
 
 static BOOL RLURLIsExternal(id urlObject) {
     if (![urlObject isKindOfClass:[NSURL class]]) return YES;
     NSString *scheme = ((NSURL *)urlObject).scheme.lowercaseString ?: @"";
-    return !([scheme isEqualToString:@"ibooks"] || [scheme isEqualToString:@"itms-books"]);
+    // file: stays inside the reader. http(s) and other schemes hand off to another app.
+    // The reader's own URLSession downloads are not openURL and are not affected.
+    if (scheme.length == 0 || [scheme isEqualToString:@"file"]) return NO;
+    if ([[NSBundle mainBundle].bundleIdentifier isEqualToString:RLBooksBundleIdentifier]) {
+        return !([scheme isEqualToString:@"ibooks"] || [scheme isEqualToString:@"itms-books"]);
+    }
+    return YES;
+}
+
+static BOOL RLBundleIsThisProcess(id bundleID) {
+    if (![bundleID isKindOfClass:[NSString class]]) return NO;
+    NSString *mine = [NSBundle mainBundle].bundleIdentifier;
+    return mine.length && [bundleID isEqualToString:mine];
 }
 
 static BOOL RLIsEscapeViewController(UIViewController *vc) {
@@ -236,7 +248,7 @@ static BOOL RLIsEscapeViewController(UIViewController *vc) {
                      animated:(BOOL)flag
                    completion:(void (^)(void))completion {
     if (RLBooksActive() && RLIsEscapeViewController(viewControllerToPresent)) {
-        NSLog(@"[ReaderLock] blocked Books escape UI %@", NSStringFromClass([viewControllerToPresent class]));
+        NSLog(@"[ReaderLock] blocked reader escape UI %@", NSStringFromClass([viewControllerToPresent class]));
         if (completion) completion();
         return;
     }
@@ -249,7 +261,7 @@ static BOOL RLIsEscapeViewController(UIViewController *vc) {
 
 - (BOOL)openURL:(NSURL *)url {
     if (RLBooksActive() && RLURLIsExternal(url)) {
-        NSLog(@"[ReaderLock] blocked legacy external URL from Books: %@", url);
+        NSLog(@"[ReaderLock] blocked legacy external URL from reader: %@", url);
         return NO;
     }
     return %orig;
@@ -259,7 +271,7 @@ static BOOL RLIsEscapeViewController(UIViewController *vc) {
         options:(NSDictionary<UIApplicationOpenExternalURLOptionsKey, id> *)options
 completionHandler:(void (^)(BOOL success))completion {
     if (RLBooksActive() && RLURLIsExternal(url)) {
-        NSLog(@"[ReaderLock] blocked external URL from Books: %@", url);
+        NSLog(@"[ReaderLock] blocked external URL from reader: %@", url);
         if (completion) completion(NO);
         return;
     }
@@ -268,13 +280,14 @@ completionHandler:(void (^)(BOOL success))completion {
 
 %end
 
-// Books can leave the app through LaunchServices without touching UIApplication.
-// These hooks live only in the Books process. SpringBoard still uses this class to reopen Books.
+// The reader can leave through LaunchServices without touching UIApplication.
+// These hooks run in whichever reader process this dylib was injected into.
+// SpringBoard is a different process and still uses this class to reopen the reader.
 %hook LSApplicationWorkspace
 
 - (BOOL)openURL:(id)url {
     if (RLBooksActive() && RLURLIsExternal(url)) {
-        NSLog(@"[ReaderLock] blocked LaunchServices URL from Books: %@", url);
+        NSLog(@"[ReaderLock] blocked LaunchServices URL from reader: %@", url);
         return NO;
     }
     return %orig;
@@ -282,7 +295,7 @@ completionHandler:(void (^)(BOOL success))completion {
 
 - (BOOL)openURL:(id)url withOptions:(id)options {
     if (RLBooksActive() && RLURLIsExternal(url)) {
-        NSLog(@"[ReaderLock] blocked LaunchServices URL from Books: %@", url);
+        NSLog(@"[ReaderLock] blocked LaunchServices URL from reader: %@", url);
         return NO;
     }
     return %orig;
@@ -290,7 +303,7 @@ completionHandler:(void (^)(BOOL success))completion {
 
 - (BOOL)openURL:(id)url withOptions:(id)options error:(NSError **)error {
     if (RLBooksActive() && RLURLIsExternal(url)) {
-        NSLog(@"[ReaderLock] blocked LaunchServices URL from Books: %@", url);
+        NSLog(@"[ReaderLock] blocked LaunchServices URL from reader: %@", url);
         if (error) *error = nil;
         return NO;
     }
@@ -299,7 +312,7 @@ completionHandler:(void (^)(BOOL success))completion {
 
 - (BOOL)openSensitiveURL:(id)url withOptions:(id)options {
     if (RLBooksActive() && RLURLIsExternal(url)) {
-        NSLog(@"[ReaderLock] blocked sensitive URL from Books: %@", url);
+        NSLog(@"[ReaderLock] blocked sensitive URL from reader: %@", url);
         return NO;
     }
     return %orig;
@@ -307,7 +320,7 @@ completionHandler:(void (^)(BOOL success))completion {
 
 - (BOOL)openSensitiveURL:(id)url withOptions:(id)options error:(NSError **)error {
     if (RLBooksActive() && RLURLIsExternal(url)) {
-        NSLog(@"[ReaderLock] blocked sensitive URL from Books: %@", url);
+        NSLog(@"[ReaderLock] blocked sensitive URL from reader: %@", url);
         if (error) *error = nil;
         return NO;
     }
@@ -316,7 +329,7 @@ completionHandler:(void (^)(BOOL success))completion {
 
 - (void)openURL:(id)url configuration:(id)configuration completionHandler:(void (^)(BOOL success))completion {
     if (RLBooksActive() && RLURLIsExternal(url)) {
-        NSLog(@"[ReaderLock] blocked configured URL from Books: %@", url);
+        NSLog(@"[ReaderLock] blocked configured URL from reader: %@", url);
         if (completion) completion(NO);
         return;
     }
@@ -324,16 +337,16 @@ completionHandler:(void (^)(BOOL success))completion {
 }
 
 - (BOOL)openApplicationWithBundleID:(id)bundleID {
-    if (RLBooksActive() && ![bundleID isEqual:RLBooksBundleIdentifier]) {
-        NSLog(@"[ReaderLock] blocked LaunchServices app open from Books: %@", bundleID);
+    if (RLBooksActive() && !RLBundleIsThisProcess(bundleID)) {
+        NSLog(@"[ReaderLock] blocked LaunchServices app open from reader: %@", bundleID);
         return NO;
     }
     return %orig;
 }
 
 - (void)openApplicationWithBundleIdentifier:(id)bundleID configuration:(id)configuration completionHandler:(void (^)(BOOL success))completion {
-    if (RLBooksActive() && ![bundleID isEqual:RLBooksBundleIdentifier]) {
-        NSLog(@"[ReaderLock] blocked LaunchServices app open from Books: %@", bundleID);
+    if (RLBooksActive() && !RLBundleIsThisProcess(bundleID)) {
+        NSLog(@"[ReaderLock] blocked LaunchServices app open from reader: %@", bundleID);
         if (completion) completion(NO);
         return;
     }
@@ -364,7 +377,7 @@ completionHandler:(void (^)(BOOL success))completion {
     @autoreleasepool {
         dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_LAZY);
         %init;
-        NSLog(@"[ReaderLock] Books component loaded");
+        NSLog(@"[ReaderLock] reader component loaded in %@", [NSBundle mainBundle].bundleIdentifier);
 
         gBooksReaderState = RLReadDarwinState();
         notify_register_dispatch(RLStateNotification, &gBooksStateToken, dispatch_get_main_queue(), ^(int token) {

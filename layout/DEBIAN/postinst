@@ -1,9 +1,13 @@
 #!/bin/sh
-# Ensure Apple Books is relaunched after installation so the ReaderLockBooks
-# dylib is injected even if Books had been suspended before the package install.
-if command -v killall >/dev/null 2>&1; then
-  killall -9 Books >/dev/null 2>&1 || true
-elif [ -x /var/jb/usr/bin/killall ]; then
-  /var/jb/usr/bin/killall -9 Books >/dev/null 2>&1 || true
-fi
+# Relaunch a suspended reader so ReaderLockBooks is injected on its next launch.
+kill_reader() {
+  if command -v killall >/dev/null 2>&1; then
+    killall -9 "$1" >/dev/null 2>&1 || true
+  elif [ -x /var/jb/usr/bin/killall ]; then
+    /var/jb/usr/bin/killall -9 "$1" >/dev/null 2>&1 || true
+  fi
+}
+kill_reader Books
+kill_reader "MapleRead SE"
+kill_reader BMSEA
 exit 0

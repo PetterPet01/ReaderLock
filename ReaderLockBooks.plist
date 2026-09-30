@@ -1,5 +1,8 @@
 {
     Filter = {
-        Bundles = ("com.apple.iBooks");
+        Bundles = (
+            "com.apple.iBooks",
+            "com.maplepop.bmsea"
+        );
     };
 }

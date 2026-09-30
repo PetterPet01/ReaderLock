@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleName</key><string>ReaderLockColorCC</string>
-<key>CFBundleDisplayName</key><string>Reader Color</string>
-<key>CFBundleExecutable</key><string>ReaderLockColorCC</string>
-<key>CFBundleIdentifier</key><string>com.quan.readerlock.colorcc</string>
+<key>CFBundleName</key><string>ReaderLockAppCC</string>
+<key>CFBundleDisplayName</key><string>Use Maple</string>
+<key>CFBundleExecutable</key><string>ReaderLockAppCC</string>
+<key>CFBundleIdentifier</key><string>com.quan.readerlock.appcc</string>
 <key>CFBundleDevelopmentRegion</key><string>English</string>
 <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 <key>CFBundlePackageType</key><string>BNDL</string>
@@ -12,7 +12,7 @@
 <key>CFBundleVersion</key><string>1</string>
 <key>MinimumOSVersion</key><string>15.0</string>
 <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
-<key>NSPrincipalClass</key><string>ReaderLockColorCC</string>
+<key>NSPrincipalClass</key><string>ReaderLockAppCC</string>
 <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
 <key>CCSGetModuleSizeAtRuntime</key><false/>
 <key>CCSModuleSize</key><dict>

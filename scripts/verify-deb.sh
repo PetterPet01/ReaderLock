@@ -20,8 +20,8 @@ if [[ "$arch" != "iphoneos-arm64" ]]; then
 fi
 
 version="$(dpkg-deb -f "$deb" Version)"
-if [[ "$version" != "0.1.3" ]]; then
-  echo "Version is '$version', expected 0.1.3" >&2
+if [[ "$version" != "0.1.4" ]]; then
+  echo "Version is '$version', expected 0.1.4" >&2
   exit 1
 fi
 
@@ -41,10 +41,12 @@ sb="$work/root/var/jb/Library/MobileSubstrate/DynamicLibraries/ReaderLockSB.dyli
 books="$work/root/var/jb/Library/MobileSubstrate/DynamicLibraries/ReaderLockBooks.dylib"
 mono="$work/root/var/jb/Library/ControlCenter/Bundles/ReaderLockMonoCC.bundle/ReaderLockMonoCC"
 color="$work/root/var/jb/Library/ControlCenter/Bundles/ReaderLockColorCC.bundle/ReaderLockColorCC"
+app="$work/root/var/jb/Library/ControlCenter/Bundles/ReaderLockAppCC.bundle/ReaderLockAppCC"
 require "$sb"
 require "$books"
 require "$mono"
 require "$color"
+require "$app"
 require "$work/root/var/jb/Library/MobileSubstrate/DynamicLibraries/ReaderLockSB.plist"
 require "$work/root/var/jb/Library/MobileSubstrate/DynamicLibraries/ReaderLockBooks.plist"
 require "$work/DEBIAN/postinst"
@@ -92,6 +94,7 @@ check_macho "$sb"
 check_macho "$books"
 check_macho "$mono"
 check_macho "$color"
+check_macho "$app"
 
 sha_file="${deb}.sha256"
 sha256sum "$deb" | awk '{print $1}' > "$sha_file"

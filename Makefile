@@ -17,5 +17,5 @@ ReaderLockBooks_FRAMEWORKS = Foundation UIKit QuartzCore LocalAuthentication
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
-SUBPROJECTS += ReaderLockMonoCC ReaderLockColorCC
+SUBPROJECTS += ReaderLockMonoCC ReaderLockColorCC ReaderLockAppCC
 include $(THEOS_MAKE_PATH)/aggregate.mk

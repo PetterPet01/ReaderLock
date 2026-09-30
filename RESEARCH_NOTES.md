@@ -53,15 +53,15 @@ References:
 
 ### Grayscale
 
-UIKit exposes `UIAccessibilityIsGrayscaleEnabled` as a read-only state query. Instead of modifying the user's global Accessibility preferences with undocumented setters, ReaderLock applies a private CoreAnimation `CAFilter` (`colorSaturate`, `inputAmount=0`) to Books windows and restores the window's prior filters on exit.
+UIKit exposes `UIAccessibilityIsGrayscaleEnabled` as a read-only state query. Instead of modifying the user's global Accessibility preferences with undocumented setters, ReaderLock applies a private CoreAnimation `CAFilter` (`colorSaturate`, `inputAmount=0`) to the chosen reader's windows and restores the window's prior filters on exit.
 
 References:
 - https://developer.apple.com/documentation/uikit/uiaccessibility/isgrayscaleenabled
 - https://github.com/kageroumado/core-animation-private
 
-### Network isolation
+### Network
 
-`RadiosPreferences` lives in AppSupport and exposes Airplane Mode state/setters in reverse-engineered headers; `SBWiFiManager` is commonly used by SpringBoard tweaks for Wi-Fi state; `BluetoothManager` exposes `powered` / `setPowered:`. ReaderLock loads private frameworks dynamically and checks every selector before calling it.
+As of 0.1.4, entering Reader Lock does not change Airplane Mode, Wi-Fi, or Bluetooth. The reader is expected to sync and download over whatever connection is already up. `RadiosPreferences`, `SBWiFiManager`, and `BluetoothManager` are still loaded dynamically, with selector checks, only to restore a snapshot that 0.1.3 may have left on disk.
 
 References:
 - https://github.com/joncardasis/To-The-Apples-Core
@@ -127,7 +127,7 @@ The active state is process-local and explicitly reset to OFF at constructor tim
 
 ### Full reboot while active
 
-The jailbreak hooks are gone after reboot, so the *kiosk* is fail-open. Airplane/Wi-Fi/Bluetooth are persistent system settings, however, and may still reflect Reader Lock until manually changed or until Dopamine is re-enabled and ReaderLock loads the recovery plist. The design therefore does not claim that a hard reboot can atomically restore radio state before userspace disappears.
+The jailbreak hooks are gone after reboot, so the *kiosk* is fail-open. 0.1.4 does not change radios. A snapshot written by 0.1.3 is a persistent Airplane/Wi-Fi/Bluetooth state until SpringBoard loads ReaderLock and restores that file. A hard reboot by itself still does not restore those settings.
 
 ### API missing on a point release
 
@@ -135,7 +135,7 @@ Radio calls use dynamic class/selector checks. Grayscale creation checks for `CA
 
 ### LocalAuthentication unavailable
 
-Both the 2-finger Books exit and triple-Home SpringBoard exit use device-owner authentication. If it cannot be evaluated, the user can use the 3-finger 8-second Books emergency exit, respring, or reboot. Keeping an authenticated exit in SpringBoard also protects against the Books process having been launched before its injection dylib was loaded.
+Both the 2-finger reader exit and triple-Home SpringBoard exit use device-owner authentication. If it cannot be evaluated, the user can use the 3-finger 8-second emergency exit inside the reader, respring, or reboot. Keeping an authenticated exit in SpringBoard also protects against the reader process having been launched before its injection dylib was loaded. The reader dylib is injected into `com.apple.iBooks` and `com.maplepop.bmsea`.
 
 ## Areas that require exact-device verification
 
@@ -146,17 +146,17 @@ Private APIs are not contracts. These are the tests that determine whether a par
 3. `SBMainSwitcherViewController -toggleMainSwitcherNoninteractivelyWithSource:animated:` is the live switcher selector and returns BOOL.
 4. Control Center entry is blocked for the actual iOS point release.
 5. Cover Sheet/Notification Center entry is blocked while unlocked but normal lock/unlock still works.
-6. Siri does not overlay Books.
+6. Siri does not overlay the reader.
 7. bulletin hook actually suppresses third-party/local notifications.
 8. an existing Clock alarm is suppressed by the alert-item hook (alarm presentation has changed between iOS versions).
-9. airplane/Wi-Fi/Bluetooth values restore correctly after asynchronous Airplane Mode transitions.
-10. the Books window has no pre-existing layer filters that are lost after Mono -> OFF.
+9. entering Reader Lock leaves Airplane Mode, Wi-Fi, and Bluetooth unchanged, and a leftover 0.1.3 recovery plist is still restored on SpringBoard start.
+10. the reader window has no pre-existing layer filters that are lost after Mono -> OFF.
 11. LocalAuthentication UI is not redirected by the app-launch firewall.
 12. all states recover correctly after a forced SpringBoard restart.
 
-## Why there are two CC controls instead of a long-press menu
+## Why the CC controls are separate toggles
 
-A pair of `CCUIToggleModule` controls is the narrowest, best-established CCSupport interface on iOS 15. A custom expanded Control Center content module would add substantially more private ControlCenterUIKit surface area solely for cosmetics. Two buttons preserve the key UX requirement: one tap directly enters Mono or Color.
+`CCUIToggleModule` is the narrowest CCSupport interface on iOS 15. Mono and Color each enter in one tap. A third toggle, checked only while Reader Lock is off, stores `maple` or `books` in the preference plist. The session then locks that bundle id so a later tap cannot retarget the firewall.
 
 ## Build-environment note
 

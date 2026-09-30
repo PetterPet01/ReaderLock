@@ -72,6 +72,7 @@ static int gAuthBeginToken = -1;
 static int gAuthEndToken = -1;
 static dispatch_source_t gWatchdog = nil;
 static NSUInteger gRadioEpoch = 0;
+static NSString *gSessionReaderBundle = nil;
 
 static inline BOOL RLActive(void) {
     return RLStateIsActive(gReaderState);
@@ -165,38 +166,6 @@ static id RLWiFiManager(void) {
     return RLSharedInstance(@"SBWiFiManager");
 }
 
-static NSDictionary *RLCaptureSystemSnapshot(void) {
-    NSMutableDictionary *snapshot = [NSMutableDictionary dictionary];
-
-    id radios = RLRadiosPreferences();
-    BOOL valid = NO;
-    BOOL airplane = RLGetBool(radios, @"airplaneMode", &valid);
-    snapshot[@"airplane.valid"] = @(valid);
-    if (valid) snapshot[@"airplane.value"] = @(airplane);
-
-    id wifi = RLWiFiManager();
-    valid = NO;
-    BOOL wifiEnabled = RLGetBool(wifi, @"wiFiEnabled", &valid);
-    snapshot[@"wifi.valid"] = @(valid);
-    if (valid) snapshot[@"wifi.value"] = @(wifiEnabled);
-
-    id bt = RLBluetoothManager();
-    valid = NO;
-    BOOL bluetoothPowered = RLGetBool(bt, @"powered", &valid);
-    if (!valid) bluetoothPowered = RLGetBool(bt, @"enabled", &valid);
-    snapshot[@"bluetooth.valid"] = @(valid);
-    if (valid) snapshot[@"bluetooth.value"] = @(bluetoothPowered);
-
-    snapshot[@"version"] = @1;
-    snapshot[@"timestamp"] = @([[NSDate date] timeIntervalSince1970]);
-    return snapshot;
-}
-
-static BOOL RLWriteRecoverySnapshot(NSDictionary *snapshot) {
-    if (!snapshot) return NO;
-    return [snapshot writeToFile:RLRecoveryPath atomically:YES];
-}
-
 static NSDictionary *RLReadRecoverySnapshot(void) {
     return [NSDictionary dictionaryWithContentsOfFile:RLRecoveryPath];
 }
@@ -205,29 +174,8 @@ static void RLClearRecoverySnapshot(void) {
     [[NSFileManager defaultManager] removeItemAtPath:RLRecoveryPath error:nil];
 }
 
-static void RLSetStrictOffline(void) {
-    NSUInteger epoch = ++gRadioEpoch;
-    id radios = RLRadiosPreferences();
-    RLSetBool(radios, @"setAirplaneMode:", YES);
-    if ([radios respondsToSelector:NSSelectorFromString(@"synchronize")]) {
-        void (*sync)(id, SEL) = (void (*)(id, SEL))[radios methodForSelector:NSSelectorFromString(@"synchronize")];
-        if (sync) sync(radios, NSSelectorFromString(@"synchronize"));
-    }
-
-    RLSetBool(RLWiFiManager(), @"setWiFiEnabled:", NO);
-    RLSetBluetoothPowered(NO);
-
-    // Airplane-mode changes can race Wi-Fi / Bluetooth state changes. Re-assert once,
-    // unless a newer isolate/restore has already superseded this request.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (epoch != gRadioEpoch) return;
-        if (RLActive() || gReaderState == RLReaderStateArming) {
-            RLSetBool(RLWiFiManager(), @"setWiFiEnabled:", NO);
-            RLSetBluetoothPowered(NO);
-        }
-    });
-}
-
+// Reader mode no longer changes radios. This only replays a snapshot an older
+// build already wrote, so a phone left in Airplane Mode by 0.1.3 can recover.
 static void RLRestoreSnapshotAfter(NSDictionary *snapshot, NSTimeInterval initialDelay) {
     if (!snapshot) return;
     NSUInteger epoch = ++gRadioEpoch;
@@ -297,13 +245,25 @@ static BOOL RLPassHomeButtonThrough(void) {
     return RLDeviceIsLocked() || RLCoverSheetIsVisible();
 }
 
+static void RLLockSessionReader(void) {
+    gSessionReaderBundle = [RLSelectedReaderBundleIdentifier() copy];
+}
+
+static void RLUnlockSessionReader(void) {
+    gSessionReaderBundle = nil;
+}
+
+static NSString *RLSessionReaderBundle(void) {
+    return gSessionReaderBundle.length ? gSessionReaderBundle : RLSelectedReaderBundleIdentifier();
+}
+
 static BOOL RLIsSafetyBundle(NSString *bundleIdentifier) {
     if (!bundleIdentifier.length) return NO;
+    if ([bundleIdentifier isEqualToString:RLSessionReaderBundle()]) return YES;
     static NSSet<NSString *> *allow = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         allow = [NSSet setWithArray:@[
-            RLBooksBundleIdentifier,
             @"com.apple.springboard",
             @"com.apple.InCallService",      // keep emergency-call UI viable
             @"com.apple.CoreAuthUI",         // LocalAuthentication / passcode UI
@@ -359,7 +319,8 @@ static void RLDismissNotificationCenterIfAppropriate(void) {
     }
 }
 
-static BOOL RLOpenBooks(void) {
+static BOOL RLOpenReaderBundle(NSString *bundleIdentifier) {
+    if (!bundleIdentifier.length) return NO;
     Class cls = NSClassFromString(@"LSApplicationWorkspace");
     if (!cls) {
         dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_LAZY | RTLD_GLOBAL);
@@ -377,7 +338,7 @@ static BOOL RLOpenBooks(void) {
     if ([workspace respondsToSelector:modern]) {
         void (*fn)(id, SEL, NSString *, id, id) = (void (*)(id, SEL, NSString *, id, id))[workspace methodForSelector:modern];
         if (fn) {
-            fn(workspace, modern, RLBooksBundleIdentifier, nil, nil);
+            fn(workspace, modern, bundleIdentifier, nil, nil);
             return YES;
         }
     }
@@ -385,25 +346,30 @@ static BOOL RLOpenBooks(void) {
     SEL legacy = NSSelectorFromString(@"openApplicationWithBundleIdentifier:");
     if ([workspace respondsToSelector:legacy]) {
         BOOL (*fn)(id, SEL, NSString *) = (BOOL (*)(id, SEL, NSString *))[workspace methodForSelector:legacy];
-        if (fn) return fn(workspace, legacy, RLBooksBundleIdentifier);
+        if (fn) return fn(workspace, legacy, bundleIdentifier);
     }
     return NO;
 }
 
-static void RLForceBooksForegroundIfNeeded(void) {
+static BOOL RLOpenSelectedReader(void) {
+    return RLOpenReaderBundle(RLSessionReaderBundle());
+}
+
+static void RLForceReaderForegroundIfNeeded(void) {
     if (!RLActive() || gAuthenticationInProgress || RLDeviceIsLocked() || RLCoverSheetIsVisible()) return;
     NSString *front = RLFrontmostBundleIdentifier();
-    if (![front isEqualToString:RLBooksBundleIdentifier]) {
-        RLOpenBooks();
+    if (![front isEqualToString:RLSessionReaderBundle()]) {
+        RLOpenSelectedReader();
     }
 }
 
 #pragma mark - State machine
 
-static void RLAbortEntry(NSDictionary *snapshot, NSString *reason) {
+static void RLAbortEntry(NSString *reason) {
     NSLog(@"[ReaderLock] entry failed: %@", reason ?: @"unknown");
     RLPublishState(RLReaderStateExiting);
-    RLRestoreSnapshotAfter(snapshot, 0);
+    RLRestoreSnapshotAfter(RLReadRecoverySnapshot(), 0);
+    RLUnlockSessionReader();
     RLPublishState(RLReaderStateOff);
 }
 
@@ -411,33 +377,28 @@ static void RLBeginReaderMode(RLReaderState requestedMode) {
     if (gReaderState != RLReaderStateOff) return;
     if (requestedMode != RLReaderStateMono && requestedMode != RLReaderStateColor) return;
 
-    NSLog(@"[ReaderLock] entering %@", requestedMode == RLReaderStateMono ? @"MONO" : @"COLOR");
+    RLLockSessionReader();
+    NSString *reader = RLSessionReaderBundle();
+    NSLog(@"[ReaderLock] entering %@ reader %@", requestedMode == RLReaderStateMono ? @"MONO" : @"COLOR", reader);
     RLPublishState(RLReaderStateArming);
-
-    NSDictionary *snapshot = RLCaptureSystemSnapshot();
-    if (!RLWriteRecoverySnapshot(snapshot)) {
-        RLAbortEntry(nil, @"Could not persist radio recovery snapshot");
-        return;
-    }
 
     RLDismissControlCenter();
     RLDismissAssistantIfNeeded();
-    RLSetStrictOffline();
 
-    if (!RLOpenBooks()) {
-        RLAbortEntry(snapshot, @"Could not ask LaunchServices to open Books");
+    if (!RLOpenSelectedReader()) {
+        RLAbortEntry(@"Could not ask LaunchServices to open the reader");
         return;
     }
 
-    // Do not arm the firewall until Books has genuinely reached the foreground.
+    // Do not arm the firewall until the chosen reader has genuinely reached the foreground.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.70 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         NSString *front = RLFrontmostBundleIdentifier();
-        if (![front isEqualToString:RLBooksBundleIdentifier]) {
-            RLOpenBooks();
+        if (![front isEqualToString:reader]) {
+            RLOpenSelectedReader();
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.55 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 NSString *second = RLFrontmostBundleIdentifier();
-                if (![second isEqualToString:RLBooksBundleIdentifier]) {
-                    RLAbortEntry(snapshot, @"Books never became foreground");
+                if (![second isEqualToString:reader]) {
+                    RLAbortEntry([NSString stringWithFormat:@"%@ never became foreground", reader]);
                     return;
                 }
                 RLPublishState(requestedMode);
@@ -455,8 +416,9 @@ static void RLEndReaderMode(void) {
     RLPublishState(RLReaderStateExiting); // firewall hooks become permissive immediately
     gAuthenticationInProgress = NO;
 
-    NSDictionary *snapshot = RLReadRecoverySnapshot();
-    RLRestoreSnapshotAfter(snapshot, 0);
+    // Radios were not changed. A snapshot here is one left behind by an older build.
+    RLRestoreSnapshotAfter(RLReadRecoverySnapshot(), 0);
+    RLUnlockSessionReader();
     RLPublishState(RLReaderStateOff);
 }
 
@@ -480,7 +442,7 @@ static void RLRequestSpringBoardAuthenticatedExit(void) {
                 RLEndReaderMode();
             } else {
                 gAuthenticationInProgress = NO;
-                RLForceBooksForegroundIfNeeded();
+                RLForceReaderForegroundIfNeeded();
                 NSLog(@"[ReaderLock] SpringBoard exit authentication failed/cancelled: %@", authError);
             }
         });
@@ -491,6 +453,7 @@ static void RLRecoverIfNeeded(void) {
     NSDictionary *snapshot = RLReadRecoverySnapshot();
     RLPublishState(RLReaderStateOff); // fail-open first
     gAuthenticationInProgress = NO;
+    RLUnlockSessionReader();
 
     if (!snapshot) return;
     NSLog(@"[ReaderLock] recovery snapshot found after SpringBoard restart; restoring system state");
@@ -510,12 +473,13 @@ static void RLRecoverIfNeeded(void) {
         return;
     }
 
-    if (![bundleIdentifier isEqualToString:RLBooksBundleIdentifier]) {
-        NSLog(@"[ReaderLock] blocked app launch %@ -> Books", bundleIdentifier);
+    NSString *reader = RLSessionReaderBundle();
+    if (![bundleIdentifier isEqualToString:reader]) {
+        NSLog(@"[ReaderLock] blocked app launch %@ -> %@", bundleIdentifier, reader);
         if ([self respondsToSelector:@selector(setURL:)]) {
             self.URL = nil;
         }
-        %orig(RLBooksBundleIdentifier);
+        %orig(reader);
         return;
     }
 
@@ -530,7 +494,7 @@ static void RLRecoverIfNeeded(void) {
 
 - (void)singlePressUp:(id)press {
     if (!RLPassHomeButtonThrough()) {
-        RLForceBooksForegroundIfNeeded();
+        RLForceReaderForegroundIfNeeded();
         return;
     }
     %orig;
@@ -647,7 +611,7 @@ static void RLRecoverIfNeeded(void) {
     %orig;
     if (!RLActive() || gAuthenticationInProgress) return;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        RLForceBooksForegroundIfNeeded();
+        RLForceReaderForegroundIfNeeded();
     });
 }
 
@@ -820,7 +784,7 @@ static void RLStartWatchdog(void) {
         RLDismissControlCenter();
         RLDismissNotificationCenterIfAppropriate();
         RLDismissAssistantIfNeeded();
-        RLForceBooksForegroundIfNeeded();
+        RLForceReaderForegroundIfNeeded();
     });
     dispatch_resume(gWatchdog);
 }
@@ -846,7 +810,7 @@ static void RLStartWatchdog(void) {
         });
         notify_register_dispatch(RLAuthEndNotification, &gAuthEndToken, dispatch_get_main_queue(), ^(int token) {
             gAuthenticationInProgress = NO;
-            RLForceBooksForegroundIfNeeded();
+            RLForceReaderForegroundIfNeeded();
         });
 
         RLRecoverIfNeeded();
