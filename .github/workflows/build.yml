@@ -14,7 +14,7 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential fakeroot rsync curl perl zip git libxml2 libtinfo6 wget xz-utils ca-certificates file
+          sudo apt-get install -y build-essential fakeroot rsync curl perl zip git libxml2 libtinfo6 wget xz-utils ca-certificates file libplist-2.0-4
 
       - name: Install Theos, toolchain, and iOS 15.6 SDK
         run: |
