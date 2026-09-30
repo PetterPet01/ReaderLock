@@ -1,8 +1,12 @@
 # Build status
 
 Date: 2026-09-30
-Release candidate: 0.1.5
+Release candidate: 0.1.6
 Target: iPhone 7 (A10 / arm64), iOS 15.x, Dopamine rootless / ElleKit.
+
+## What changed from 0.1.5
+
+Pulling down from the top no longer tracks Notification Center while the reader is unlocked and the cover sheet is not already showing. Pulling up from the bottom no longer tracks Control Center. The first Home click still unlocks. A second click within that unlock is ignored, and a double-click does not open the app switcher. 0.1.5's Powercuff behavior is unchanged.
 
 ## What changed from 0.1.4
 
@@ -14,11 +18,11 @@ Once the chosen reader is actually in front, Reader Lock sets Powercuff's `Power
 
 `make clean package FINALPACKAGE=1` with Theos, the L1ghtmann iOS toolchain, and the iPhoneOS 15.6 SDK produces:
 
-`packages/com.quan.readerlock_0.1.5_iphoneos-arm64.deb`
+`packages/com.quan.readerlock_0.1.6_iphoneos-arm64.deb`
 
 `scripts/verify-deb.sh` then checks that package:
 
-- Debian architecture `iphoneos-arm64` (rootless), version 0.1.5
+- Debian architecture `iphoneos-arm64` (rootless), version 0.1.6
 - `ReaderLockSB.dylib` and `ReaderLockBooks.dylib` are arm64 Mach-O and have `LC_CODE_SIGNATURE`
 - the Mono, Color, and Use Maple Control Center bundles are present and signed the same way
 - every data-archive path is under `/var/jb`

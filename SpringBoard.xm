@@ -64,6 +64,9 @@
 
 static RLReaderState gReaderState = RLReaderStateOff;
 static BOOL gAuthenticationInProgress = NO;
+// When the unlock click was forwarded. A second click in this window is Home,
+// and it suspends the reader; the watchdog then launches it again.
+static NSTimeInterval gUnlockHomeForwardedAt = 0;
 static int gStateToken = -1;
 static int gMonoCommandToken = -1;
 static int gColorCommandToken = -1;
@@ -643,21 +646,37 @@ static void RLRecoverIfNeeded(void) {
 %hook SBHomeHardwareButton
 
 - (void)singlePressUp:(id)press {
-    if (!RLPassHomeButtonThrough()) {
-        RLForceReaderForegroundIfNeeded();
+    if (!RLActive() || gAuthenticationInProgress) {
+        %orig;
         return;
     }
-    %orig;
+    BOOL locked = RLDeviceIsLocked();
+    BOOL cover = RLCoverSheetIsVisible();
+    if (locked || cover) {
+        NSTimeInterval now = [NSDate date].timeIntervalSinceReferenceDate;
+        // A second click while still locked is the start of a double-press.
+        // Once Touch ID has cleared the lock, the cover sheet is still moving
+        // and that same second click is a real Home press: the reader suspends
+        // and the watchdog launches it again.
+        BOOL repeatWhileLocked = locked && gUnlockHomeForwardedAt > 0 && (now - gUnlockHomeForwardedAt) < 0.55;
+        BOOL extraAfterUnlock = !locked && cover && gUnlockHomeForwardedAt > 0 && (now - gUnlockHomeForwardedAt) < 4.0;
+        if (repeatWhileLocked || extraAfterUnlock) {
+            NSLog(@"[ReaderLock] swallowed repeat Home click during unlock");
+            return;
+        }
+        gUnlockHomeForwardedAt = now;
+        %orig;
+        return;
+    }
+    RLForceReaderForegroundIfNeeded();
 }
 
 - (void)doublePressUp:(id)press {
-    if (!RLPassHomeButtonThrough()) return;
-    %orig;
+    if (!RLActive() || gAuthenticationInProgress) %orig;
 }
 
 - (void)doubleTapUp:(id)press {
-    if (!RLPassHomeButtonThrough()) return;
-    %orig;
+    if (!RLActive() || gAuthenticationInProgress) %orig;
 }
 
 - (void)triplePressUp:(id)press {
@@ -704,6 +723,26 @@ static void RLRecoverIfNeeded(void) {
     %orig;
 }
 
+- (BOOL)_shouldAllowControlCenterGesture {
+    if (RLActive()) return NO;
+    return %orig;
+}
+
+- (BOOL)allowShowTransitionSystemGesture {
+    if (RLActive()) return NO;
+    return %orig;
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(id)recognizer {
+    if (RLActive()) return NO;
+    return %orig;
+}
+
+- (BOOL)grabberTongueOrPullEnabled:(id)tongue forGestureRecognizer:(id)recognizer {
+    if (RLActive()) return NO;
+    return %orig;
+}
+
 %end
 
 %hook SBNotificationCenterController
@@ -732,6 +771,24 @@ static void RLRecoverIfNeeded(void) {
         RLInvokeVoidCompletion(completion);
         return;
     }
+    %orig;
+}
+
+// The methods above run after the finger has already dragged the sheet.
+// These three are the interactive pull. They also dismiss a sheet that is
+// already up, so they stay live on the lock screen and for the camera swipe.
+- (void)_presentGestureBeganWithGestureRecognizer:(id)recognizer {
+    if (RLActive() && !RLDeviceIsLocked() && !RLCoverSheetIsVisible()) return;
+    %orig;
+}
+
+- (void)_presentOrDismissGestureChangedWithGestureRecognizer:(id)recognizer {
+    if (RLActive() && !RLDeviceIsLocked() && !RLCoverSheetIsVisible()) return;
+    %orig;
+}
+
+- (void)_presentOrDismissGestureEndedWithGestureRecognizer:(id)recognizer {
+    if (RLActive() && !RLDeviceIsLocked() && !RLCoverSheetIsVisible()) return;
     %orig;
 }
 

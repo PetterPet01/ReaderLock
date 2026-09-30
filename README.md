@@ -16,10 +16,10 @@ MapleRead SE is the default when nothing has been chosen yet. Its bundle id is `
 
 - the chosen reader is forced to the foreground, and the other reader is not allowed either;
 - attempts to launch another app are redirected to that reader;
-- the Home action is eaten and a foreground watchdog re-opens the reader if another route reaches SpringBoard;
-- app switcher presentation is blocked;
-- Control Center presentation is blocked;
-- Notification Center / Cover Sheet presentation from the unlocked reader session is blocked;
+- the Home action is eaten and a foreground watchdog re-opens the reader if another route reaches SpringBoard. One Home click still unlocks the iPhone 7. A second click while that unlock is finishing is ignored, so it does not leave the reader and launch it again;
+- app switcher presentation is blocked, including a double-click of Home;
+- pulling up from the bottom does not open Control Center, and a Control Center that is already opening is dismissed;
+- pulling down from the top does not open Notification Center over the reader. The same pull still works on the lock screen, and the side button can still lock;
 - queued notification history is hidden on the Lock Screen while Reader Lock is active;
 - the Lock Screen Today View is disabled while Reader Lock is active;
 - Siri activation is blocked;
@@ -205,7 +205,7 @@ RESEARCH_NOTES.md               API/hook rationale and risk notes
 This is deliberately conservative, but several parts are private and must be validated on-device:
 
 - `FBSystemServiceOpenApplicationRequest -setBundleIdentifier:` is the central launch firewall hook. A current open-source rootless tweak reports this exact hook working on iPhone 7 / iOS 15.7.7 / Dopamine, making it the strongest compatibility anchor in the project.
-- Home, the app switcher, Reachability, and the Side+Home screenshot chord are handled on `SBHomeHardwareButton` (`singlePressUp:`, `doublePressUp:`, `triplePressUp:`, `longPress:`, `screenshotRecognizerDidRecognize:`). Triple-press is the SpringBoard authenticated exit. Switcher, Control Center, Notification Center, and cover-sheet classes are still private; the foreground watchdog and launch firewall are the fallback if a presentation hook changes.
+- Home, the app switcher, Reachability, and the Side+Home screenshot chord are handled on `SBHomeHardwareButton` (`singlePressUp:`, `doublePressUp:`, `triplePressUp:`, `longPress:`, `screenshotRecognizerDidRecognize:`). Triple-press is the SpringBoard authenticated exit. A repeat `singlePressUp:` during unlock is not forwarded. `doublePressUp:` is not forwarded while Reader Lock is active. Switcher, Control Center, Notification Center, and cover-sheet classes are still private; the foreground watchdog and launch firewall are the fallback if a presentation hook changes. The Control Center pull is refused by `_shouldAllowControlCenterGesture`, `allowShowTransitionSystemGesture`, `gestureRecognizerShouldBegin:`, and `grabberTongueOrPullEnabled:forGestureRecognizer:`. The Notification Center pull is refused by `_presentGestureBeganWithGestureRecognizer:` and the two `_presentOrDismissGesture` methods, and only while the cover sheet is not already up.
 - `BBServer` and `SBAlertItemsController` are best-effort suppression paths. ReaderLock hooks `publishBulletin:destinations:`, `publishBulletinRequest:destinations:`, and `_publishBulletinRequest:forSectionID:forDestinations:`, plus both `activateAlertItem:` variants, and hides an already-visible notification list. An iOS point release can still move an alarm through another presentation or audio route, which is why the validation plan tests them.
 - `RadiosPreferences`, `SBWiFiManager`, and `BluetoothManager` are loaded dynamically and guarded with selector checks. 0.1.4 and later do not call them on entry. They remain only so a recovery snapshot written by 0.1.3 can still be restored. A missing API causes that restore to fail open rather than crash SpringBoard.
 - Powercuff's `PowerMode` / `RequireLowPowerMode` preferences and `_CDBatterySaver -setPowerMode:error:` are private. `PowerMode` 4 is the Heavy value YukiPower writes. If Powercuff is not installed, the preference write has nothing to apply and Low Power Mode is still requested. Neither path disables other tweaks.
@@ -238,7 +238,7 @@ The chosen reader is a separate file, and it is not deleted on exit:
 ReaderLock intentionally does not try to interfere with:
 
 - sleep/wake via the side button;
-- the lock screen itself: while it is up, Home is delivered normally so an iPhone 7 can finish Touch ID or passcode unlock (Home is swallowed again only after the cover sheet is gone);
+- the lock screen itself: the first Home click is delivered so an iPhone 7 can finish Touch ID or passcode unlock. A second click during that unlock is ignored. Home is swallowed again once the cover sheet is gone;
 - shutdown/reboot, including power-off, restart, and reset alerts;
 - critical low-battery / thermal / emergency/SOS alert classes;
 - LocalAuthentication UI required to leave Reader Lock.
