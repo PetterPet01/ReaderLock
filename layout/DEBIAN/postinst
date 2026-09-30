@@ -1,0 +1,9 @@
+#!/bin/sh
+# Ensure Apple Books is relaunched after installation so the ReaderLockBooks
+# dylib is injected even if Books had been suspended before the package install.
+if command -v killall >/dev/null 2>&1; then
+  killall -9 Books >/dev/null 2>&1 || true
+elif [ -x /var/jb/usr/bin/killall ]; then
+  /var/jb/usr/bin/killall -9 Books >/dev/null 2>&1 || true
+fi
+exit 0

@@ -1,0 +1,2 @@
+Makefile:6: /makefiles/common.mk: No such file or directory
+make: *** No rule to make target '/makefiles/common.mk'.  Stop.

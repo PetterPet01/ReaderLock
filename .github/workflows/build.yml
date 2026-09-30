@@ -1,0 +1,50 @@
+name: Build ReaderLock rootless deb
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential fakeroot rsync curl perl zip git libxml2 libtinfo6 wget xz-utils ca-certificates file
+
+      - name: Install Theos, toolchain, and iOS 15.6 SDK
+        run: |
+          set -euo pipefail
+          THEOS="$RUNNER_TEMP/theos"
+          git clone --depth 1 https://github.com/theos/theos.git "$THEOS"
+          git -C "$THEOS" submodule update --init --recursive --depth 1
+          mkdir -p "$THEOS/toolchain" "$THEOS/sdks"
+          curl -fsSL -o "$RUNNER_TEMP/toolchain.tar.xz" \
+            https://github.com/L1ghtmann/llvm-project/releases/download/test-210562a/iOSToolchain-x86_64.tar.xz
+          tar -C "$THEOS/toolchain" -xJf "$RUNNER_TEMP/toolchain.tar.xz"
+          curl -fsSL -o "$RUNNER_TEMP/sdk.tar.xz" \
+            https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS15.6.sdk.tar.xz
+          tar -C "$THEOS/sdks" -xJf "$RUNNER_TEMP/sdk.tar.xz"
+          test -x "$THEOS/toolchain/linux/iphone/bin/clang"
+          test -d "$THEOS/sdks/iPhoneOS15.6.sdk"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          echo "$THEOS/toolchain/linux/iphone/bin" >> "$GITHUB_PATH"
+
+      - name: Build and verify the package
+        run: |
+          set -euo pipefail
+          make clean package FINALPACKAGE=1
+          ./scripts/verify-deb.sh
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReaderLock-rootless-deb
+          path: |
+            packages/*.deb
+            packages/*.sha256
+          if-no-files-found: error

@@ -1,0 +1,7 @@
+.theos/
+obj/
+packages/
+.planning/
+dist/
+*.deb
+.DS_Store
