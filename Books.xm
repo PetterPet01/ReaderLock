@@ -112,11 +112,21 @@ static BOOL RLInheritsViewController(Class cls) {
     return NO;
 }
 
+// MapleRead is compiled with a newer clang than the iOS 15 SDK headers. Its
+// overrides are encoded "B16@0:8", not "B@:", so a string compare skips the
+// class that actually owns the status bar and leaves a black strip on screen.
+static BOOL RLIsNoArgGetter(Method method, char a, char b, char c, char d) {
+    if (!method || method_getNumberOfArguments(method) != 2) return NO;
+    char ret[8] = {0};
+    method_getReturnType(method, ret, sizeof(ret));
+    char type = ret[0];
+    return type && (type == a || type == b || type == c || type == d);
+}
+
 static void RLHookStatusMethod(Class cls, SEL sel, NSMutableSet<NSString *> *hooked, BOOL hiddenMethod) {
     if (!cls || !hooked) return;
     NSString *name = NSStringFromClass(cls);
     if ([hooked containsObject:name]) return;
-    [hooked addObject:name];
 
     unsigned int count = 0;
     Method *list = class_copyMethodList(cls, &count);
@@ -128,27 +138,31 @@ static void RLHookStatusMethod(Class cls, SEL sel, NSMutableSet<NSString *> *hoo
         }
     }
     free(list);
-    if (!found) return;
+    if (!found) {
+        [hooked addObject:name];
+        return;
+    }
 
-    const char *encoding = method_getTypeEncoding(found);
     if (hiddenMethod) {
-        if (!encoding || (strcmp(encoding, "B@:") != 0 && strcmp(encoding, "c@:") != 0)) return;
+        if (!RLIsNoArgGetter(found, 'B', 'c', 0, 0)) return;
         BOOL (*original)(id, SEL) = (BOOL (*)(id, SEL))method_getImplementation(found);
         IMP replacement = imp_implementationWithBlock(^BOOL(id self) {
             if (RLBooksActive()) return YES;
             return original(self, sel);
         });
         method_setImplementation(found, replacement);
+        [hooked addObject:name];
         return;
     }
 
-    if (!encoding || (strcmp(encoding, "q@:") != 0 && strcmp(encoding, "i@:") != 0)) return;
+    if (!RLIsNoArgGetter(found, 'q', 'i', 'l', 'Q')) return;
     NSInteger (*original)(id, SEL) = (NSInteger (*)(id, SEL))method_getImplementation(found);
     IMP replacement = imp_implementationWithBlock(^NSInteger(id self) {
         if (RLBooksActive()) return UIStatusBarAnimationNone;
         return original(self, sel);
     });
     method_setImplementation(found, replacement);
+    [hooked addObject:name];
 }
 
 static void RLHookStatusMethods(Class cls) {
@@ -185,6 +199,67 @@ static void RLRefreshStatusBarAppearance(void) {
     }
 }
 
+static BOOL RLIsSystemStatusBarView(UIView *view) {
+    NSString *name = NSStringFromClass(object_getClass(view));
+    return [name isEqualToString:@"UIStatusBar"]
+        || [name isEqualToString:@"UIStatusBarWindow"]
+        || [name isEqualToString:@"_UIStatusBar"]
+        || [name isEqualToString:@"UIStatusBar_Modern"];
+}
+
+static char kRLStatusBarSavedKey;
+
+static void RLSetSystemStatusBarView(UIView *view, BOOL hidden) {
+    if (RLIsSystemStatusBarView(view)) {
+        if (hidden) {
+            if (!objc_getAssociatedObject(view, &kRLStatusBarSavedKey)) {
+                UIColor *color = view.backgroundColor;
+                objc_setAssociatedObject(view, &kRLStatusBarSavedKey, @{
+                    @"a": @(view.alpha),
+                    @"h": @(view.hidden),
+                    @"c": color ?: (id)[NSNull null],
+                }, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            view.backgroundColor = [UIColor clearColor];
+            view.opaque = NO;
+            view.alpha = 0;
+            view.hidden = YES;
+        } else {
+            NSDictionary *saved = objc_getAssociatedObject(view, &kRLStatusBarSavedKey);
+            if (saved) {
+                view.alpha = [saved[@"a"] doubleValue];
+                view.hidden = [saved[@"h"] boolValue];
+                id color = saved[@"c"];
+                view.backgroundColor = (color == [NSNull null]) ? nil : color;
+                objc_setAssociatedObject(view, &kRLStatusBarSavedKey, nil, OBJC_ASSOCIATION_ASSIGN);
+            }
+        }
+    }
+    for (UIView *subview in view.subviews) RLSetSystemStatusBarView(subview, hidden);
+}
+
+static void RLApplySystemStatusBarHidden(BOOL hidden) {
+    for (UIWindow *window in RLApplicationWindows()) {
+        if ([window isKindOfClass:[RLBottomBarWindow class]]) continue;
+        RLSetSystemStatusBarView(window, hidden);
+    }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    [[UIApplication sharedApplication] setStatusBarHidden:hidden withAnimation:UIStatusBarAnimationNone];
+#pragma clang diagnostic pop
+}
+
+static void RLSuppressStatusBarView(UIView *view) {
+    if (!RLBooksActive() || !view) return;
+    if (view.hidden && view.alpha == 0) return;
+    static BOOL inside = NO;
+    if (inside) return;
+    inside = YES;
+    view.alpha = 0;
+    view.hidden = YES;
+    inside = NO;
+}
+
 @implementation RLBottomBarWindow
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
@@ -206,24 +281,41 @@ static void RLRefreshStatusBarAppearance(void) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor clearColor];
+    self.view.opaque = NO;
     self.view.userInteractionEnabled = NO;
 
-    UILabel *label = [[UILabel alloc] init];
-    label.translatesAutoresizingMaskIntoConstraints = NO;
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
     label.font = [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightMedium];
     label.textColor = [UIColor secondaryLabelColor];
     label.textAlignment = NSTextAlignmentCenter;
     label.numberOfLines = 1;
     label.userInteractionEnabled = NO;
+    label.backgroundColor = [UIColor clearColor];
+    label.opaque = NO;
     [self.view addSubview:label];
-    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
-    [NSLayoutConstraint activateConstraints:@[
-        [label.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:8],
-        [label.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-8],
-        [label.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-4],
-        [label.heightAnchor constraintEqualToConstant:20],
-    ]];
     self.statusLabel = label;
+}
+
+- (void)viewWillLayoutSubviews {
+    [super viewWillLayoutSubviews];
+    if (self.view.window && !CGRectEqualToRect(self.view.frame, self.view.window.bounds)) {
+        self.view.frame = self.view.window.bounds;
+    }
+    self.statusLabel.frame = CGRectInset(self.view.bounds, 8, 0);
+}
+
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    UIWindow *window = self.view.window;
+    [coordinator animateAlongsideTransition:nil completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
+        if (!window) return;
+        CGRect bounds = window.windowScene ? window.windowScene.coordinateSpace.bounds : UIScreen.mainScreen.bounds;
+        window.frame = CGRectMake(bounds.origin.x, CGRectGetMaxY(bounds) - 22, bounds.size.width, 22);
+    }];
+}
+
+- (UIRectEdge)edgesForExtendedLayout {
+    return UIRectEdgeAll;
 }
 
 - (BOOL)prefersStatusBarHidden {
@@ -256,10 +348,33 @@ static NSString *RLBottomBarNetwork(void) {
     return (reachable && !cellular) ? @"Wi-Fi" : @"—";
 }
 
+static UIWindowScene *RLForegroundScene(void);
+
+static CGRect RLBottomStripFrame(UIWindowScene *scene) {
+    CGRect bounds = scene ? scene.coordinateSpace.bounds : CGRectZero;
+    if (CGRectIsEmpty(bounds)) bounds = UIScreen.mainScreen.bounds;
+    return CGRectMake(bounds.origin.x, CGRectGetMaxY(bounds) - 22, bounds.size.width, 22);
+}
+
+static void RLPlaceBottomBarWindow(void) {
+    if (!gBottomBarWindow) return;
+    CGRect frame = RLBottomStripFrame(gBottomBarWindow.windowScene ?: RLForegroundScene());
+    if (!CGRectEqualToRect(gBottomBarWindow.frame, frame)) gBottomBarWindow.frame = frame;
+}
+
 static void RLUpdateBottomBarText(void) {
+    if (!gBottomBarLabel) {
+        UIViewController *root = gBottomBarWindow.rootViewController;
+        [root loadViewIfNeeded];
+        if ([root isKindOfClass:[RLBottomBarController class]]) {
+            gBottomBarLabel = ((RLBottomBarController *)root).statusLabel;
+        }
+    }
     if (!gBottomBarLabel) return;
+    RLPlaceBottomBarWindow();
     float level = [UIDevice currentDevice].batteryLevel;
     NSString *battery = level < 0 ? @"—" : [NSString stringWithFormat:@"%ld%%", (long)lroundf(level * 100.f)];
+    gBottomBarLabel.textColor = [UIColor secondaryLabelColor];
     gBottomBarLabel.text = [NSString stringWithFormat:@"%@   •   %@   •   %@",
                             RLBottomBarTime(), RLBottomBarNetwork(), battery];
 }
@@ -319,6 +434,9 @@ static void RLStartBottomBarSignals(void) {
         [center addObserverForName:UISceneDidActivateNotification object:nil queue:main usingBlock:^(__unused NSNotification *note) {
             RLUpdateBottomBarVisibility();
         }];
+        [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:main usingBlock:^(__unused NSNotification *note) {
+            RLUpdateBottomBarVisibility();
+        }];
 
         struct sockaddr_in address = {0};
         address.sin_len = sizeof(address);
@@ -332,6 +450,25 @@ static void RLStartBottomBarSignals(void) {
     });
 }
 
+static int gBottomBarAttachAttempts = 0;
+
+static void RLScheduleBottomBarAttachRetry(void) {
+    if (gBottomBarWindow || !RLBooksActive() || gBottomBarAttachAttempts >= 4) return;
+    gBottomBarAttachAttempts++;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        RLUpdateBottomBarVisibility();
+    });
+}
+
+static void RLConfigureBottomBarWindow(RLBottomBarWindow *window) {
+    window.opaque = NO;
+    window.backgroundColor = [UIColor clearColor];
+    window.layer.opaque = NO;
+    window.userInteractionEnabled = NO;
+    window.clipsToBounds = YES;
+    window.windowLevel = UIWindowLevelStatusBar + 1;
+}
+
 static void RLUpdateBottomBarVisibility(void) {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -341,37 +478,62 @@ static void RLUpdateBottomBarVisibility(void) {
     }
     RLStartBottomBarSignals();
     if (!RLBooksActive()) {
+        gBottomBarAttachAttempts = 0;
         gBottomBarWindow.hidden = YES;
         [gBottomBarTimer invalidate];
         gBottomBarTimer = nil;
+        RLApplySystemStatusBarHidden(NO);
         RLRefreshStatusBarAppearance();
         return;
     }
 
     [UIDevice currentDevice].batteryMonitoringEnabled = YES;
     RLScanStatusBarControllers();
+    RLRefreshStatusBarAppearance();
+    RLApplySystemStatusBarHidden(YES);
 
+    BOOL hasScenes = NO;
+    for (UIScene *existing in [UIApplication sharedApplication].connectedScenes) {
+        if ([existing isKindOfClass:[UIWindowScene class]]) {
+            hasScenes = YES;
+            break;
+        }
+    }
     UIWindowScene *scene = RLForegroundScene();
-    if (!scene) {
-        RLRefreshStatusBarAppearance();
+    if (!scene && hasScenes) {
+        RLScheduleBottomBarAttachRetry();
         return;
     }
     if (!gBottomBarWindow) {
-        gBottomBarWindow = [[RLBottomBarWindow alloc] initWithWindowScene:scene];
-        gBottomBarWindow.backgroundColor = [UIColor clearColor];
-        gBottomBarWindow.userInteractionEnabled = NO;
-        gBottomBarWindow.windowLevel = UIWindowLevelStatusBar + 1;
+        if (scene) {
+            gBottomBarWindow = [[RLBottomBarWindow alloc] initWithWindowScene:scene];
+        } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            gBottomBarWindow = [[RLBottomBarWindow alloc] initWithFrame:RLBottomStripFrame(nil)];
+#pragma clang diagnostic pop
+        }
+        gBottomBarWindow.hidden = YES;
+        RLConfigureBottomBarWindow(gBottomBarWindow);
+        gBottomBarWindow.frame = RLBottomStripFrame(scene);
         RLBottomBarController *root = [RLBottomBarController new];
         gBottomBarWindow.rootViewController = root;
+        [root loadViewIfNeeded];
         gBottomBarLabel = root.statusLabel;
-    } else if (gBottomBarWindow.windowScene != scene) {
+    } else if (scene && gBottomBarWindow.windowScene != scene) {
         gBottomBarWindow.windowScene = scene;
     }
+    RLPlaceBottomBarWindow();
+    gBottomBarAttachAttempts = 0;
     gBottomBarWindow.hidden = NO;
     RLUpdateBottomBarText();
     RLScheduleBottomBarTimer();
     RLApplyRenderingModeToWindow(gBottomBarWindow);
-    RLRefreshStatusBarAppearance();
+    static BOOL logged = NO;
+    if (!logged) {
+        logged = YES;
+        NSLog(@"[ReaderLock] bottom line %@ %@", NSStringFromCGRect(gBottomBarWindow.frame), gBottomBarLabel.text);
+    }
 }
 
 #pragma mark - Authenticated exit
@@ -673,6 +835,40 @@ completionHandler:(void (^)(BOOL success))completion {
 - (CGRect)statusBarFrame {
     if (RLBooksActive()) return CGRectZero;
     return %orig;
+}
+
+%end
+
+@interface UIStatusBar : UIView
+@end
+
+@interface _UIStatusBar : UIView
+@end
+
+%hook UIStatusBar
+
+- (void)layoutSubviews {
+    %orig;
+    RLSuppressStatusBarView(self);
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    RLSuppressStatusBarView(self);
+}
+
+%end
+
+%hook _UIStatusBar
+
+- (void)layoutSubviews {
+    %orig;
+    RLSuppressStatusBarView(self);
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    RLSuppressStatusBarView(self);
 }
 
 %end
