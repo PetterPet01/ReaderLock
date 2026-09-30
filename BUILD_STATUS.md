@@ -1,8 +1,12 @@
 # Build status
 
-Date: 2026-09-30
-Release candidate: 0.1.8
+Date: 2026-10-01
+Release candidate: 0.1.9
 Target: iPhone 7 (A10 / arm64), iOS 15.x, Dopamine rootless / ElleKit.
+
+## What changed from 0.1.8
+
+0.1.8 drew the bottom line and left the library clear, but an open book kept its own grey top strip and the line covered that book's progress text. 0.1.9 hides that reading-only strip, drops its short height constraint, and keeps the progress text above the line. The library is not inset. This has not been run on a phone.
 
 ## What changed from 0.1.7
 
@@ -26,11 +30,11 @@ Once the chosen reader is actually in front, Reader Lock sets Powercuff's `Power
 
 `make clean package FINALPACKAGE=1` with Theos, the L1ghtmann iOS toolchain, and the iPhoneOS 15.6 SDK produces:
 
-`packages/com.quan.readerlock_0.1.8_iphoneos-arm64.deb`
+`packages/com.quan.readerlock_0.1.9_iphoneos-arm64.deb`
 
 `scripts/verify-deb.sh` then checks that package:
 
-- Debian architecture `iphoneos-arm64` (rootless), version 0.1.8
+- Debian architecture `iphoneos-arm64` (rootless), version 0.1.9
 - `ReaderLockSB.dylib` and `ReaderLockBooks.dylib` are arm64 Mach-O and have `LC_CODE_SIGNATURE`
 - the Mono, Color, and Use Maple Control Center bundles are present and signed the same way
 - every data-archive path is under `/var/jb`

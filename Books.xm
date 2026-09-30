@@ -94,6 +94,8 @@ static void RLApplyRenderingModeToAllWindows(void) {
 
 #pragma mark - Status bar and bottom line
 
+static const CGFloat kRLReaderBottomBand = 22.0;
+
 @interface RLBottomBarWindow : UIWindow
 @end
 
@@ -310,7 +312,7 @@ static void RLSuppressStatusBarView(UIView *view) {
     [coordinator animateAlongsideTransition:nil completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
         if (!window) return;
         CGRect bounds = window.windowScene ? window.windowScene.coordinateSpace.bounds : UIScreen.mainScreen.bounds;
-        window.frame = CGRectMake(bounds.origin.x, CGRectGetMaxY(bounds) - 22, bounds.size.width, 22);
+        window.frame = CGRectMake(bounds.origin.x, CGRectGetMaxY(bounds) - kRLReaderBottomBand, bounds.size.width, kRLReaderBottomBand);
     }];
 }
 
@@ -353,7 +355,7 @@ static UIWindowScene *RLForegroundScene(void);
 static CGRect RLBottomStripFrame(UIWindowScene *scene) {
     CGRect bounds = scene ? scene.coordinateSpace.bounds : CGRectZero;
     if (CGRectIsEmpty(bounds)) bounds = UIScreen.mainScreen.bounds;
-    return CGRectMake(bounds.origin.x, CGRectGetMaxY(bounds) - 22, bounds.size.width, 22);
+    return CGRectMake(bounds.origin.x, CGRectGetMaxY(bounds) - kRLReaderBottomBand, bounds.size.width, kRLReaderBottomBand);
 }
 
 static void RLPlaceBottomBarWindow(void) {
@@ -413,6 +415,9 @@ static UIWindowScene *RLForegroundScene(void) {
 }
 
 static void RLUpdateBottomBarVisibility(void);
+static void RLInstallReaderChromeHooks(void);
+static void RLApplyReaderChromeNow(void);
+static void RLRestoreAllReaderChrome(void);
 
 static void RLReachabilityChanged(__unused SCNetworkReachabilityRef target, __unused SCNetworkReachabilityFlags flags, __unused void *info) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -484,6 +489,7 @@ static void RLUpdateBottomBarVisibility(void) {
         gBottomBarTimer = nil;
         RLApplySystemStatusBarHidden(NO);
         RLRefreshStatusBarAppearance();
+        RLRestoreAllReaderChrome();
         return;
     }
 
@@ -491,6 +497,8 @@ static void RLUpdateBottomBarVisibility(void) {
     RLScanStatusBarControllers();
     RLRefreshStatusBarAppearance();
     RLApplySystemStatusBarHidden(YES);
+    RLInstallReaderChromeHooks();
+    RLApplyReaderChromeNow();
 
     BOOL hasScenes = NO;
     for (UIScene *existing in [UIApplication sharedApplication].connectedScenes) {
@@ -801,6 +809,477 @@ completionHandler:(void (^)(BOOL success))completion {
 
 %end
 
+#pragma mark - Reading-screen chrome
+
+// The system status bar is already hidden on the library. An open book still
+// keeps its own short top band, and its progress labels sit in the same strip
+// as the bottom line. Collapse that band and keep those labels above the line.
+// Both come back when Reader Lock turns off.
+
+static char kRLForcedHeightKey;
+static char kRLTopSavedKey;
+static char kRLFooterShiftKey;
+static char kRLSavedBottomInsetKey;
+static NSHashTable *gCollapsedTopViews = nil;
+static NSHashTable *gFooterShiftedViews = nil;
+static NSHashTable *gInsetControllers = nil;
+static NSMutableSet<NSString *> *gChromeClassNames = nil;
+static NSMutableSet<NSString *> *gPlainClassNames = nil;
+static NSMutableSet<NSString *> *gHookedChromeMethods = nil;
+static NSInteger gChromeDepth = 0;
+static NSMutableSet<NSString *> *gScannedChromeClasses = nil;
+
+static void RLHookChromeSelectors(id object);
+
+static BOOL RLObjectHasKey(id object, const char *key) {
+    if (!object || !key) return NO;
+    char underscored[96];
+    snprintf(underscored, sizeof(underscored), "_%s", key);
+    for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
+        if (class_getProperty(cls, key)) return YES;
+        if (class_getInstanceVariable(cls, underscored)) return YES;
+        if (class_getInstanceVariable(cls, key)) return YES;
+    }
+    return NO;
+}
+
+static id RLKVC(id object, const char *key) {
+    if (!RLObjectHasKey(object, key)) return nil;
+    @try {
+        return [object valueForKey:[NSString stringWithUTF8String:key]];
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+static BOOL RLIsReaderChromeController(id object) {
+    if (!object) return NO;
+    NSString *name = NSStringFromClass(object_getClass(object));
+    if (!gChromeClassNames) gChromeClassNames = [NSMutableSet set];
+    if (!gPlainClassNames) gPlainClassNames = [NSMutableSet set];
+    if ([gChromeClassNames containsObject:name]) return YES;
+    if ([gPlainClassNames containsObject:name]) return NO;
+    BOOL found = RLObjectHasKey(object, "blackStatusBarArea")
+        || RLObjectHasKey(object, "blackStatusBar")
+        || RLObjectHasKey(object, "pageLabel")
+        || RLObjectHasKey(object, "progressLabel");
+    [(found ? gChromeClassNames : gPlainClassNames) addObject:name];
+    return found;
+}
+
+static BOOL RLContainsControl(UIView *view, NSInteger depth) {
+    if (!view || depth > 6) return NO;
+    if ([view isKindOfClass:[UIControl class]]) return YES;
+    for (UIView *subview in view.subviews) {
+        if (RLContainsControl(subview, depth + 1)) return YES;
+    }
+    return NO;
+}
+
+static BOOL RLIsThinBand(UIView *view) {
+    CGFloat height = view.bounds.size.height;
+    if (height <= 0.5) return YES;
+    if (height > 80) return NO;
+    if (!view.window) return YES;
+    CGRect inWindow = [view convertRect:view.bounds toView:nil];
+    if (inWindow.size.height > 80) return NO;
+    BOOL atTop = inWindow.origin.y <= 2;
+    BOOL atBottom = CGRectGetMaxY(inWindow) >= CGRectGetHeight(view.window.bounds) - 2;
+    return atTop || atBottom;
+}
+
+static void RLRestoreHeightConstraints(UIView *view) {
+    if (!view) return;
+    NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray arrayWithArray:view.constraints];
+    if (view.superview) [constraints addObjectsFromArray:view.superview.constraints];
+    for (NSLayoutConstraint *constraint in constraints) {
+        NSNumber *original = objc_getAssociatedObject(constraint, &kRLForcedHeightKey);
+        if (!original) continue;
+        objc_setAssociatedObject(constraint, &kRLForcedHeightKey, nil, OBJC_ASSOCIATION_ASSIGN);
+        constraint.constant = original.doubleValue;
+    }
+}
+
+static void RLRestoreTopView(UIView *view) {
+    if (![view isKindOfClass:[UIView class]]) return;
+    RLRestoreHeightConstraints(view);
+    NSDictionary *saved = objc_getAssociatedObject(view, &kRLTopSavedKey);
+    if (!saved) return;
+    view.hidden = [saved[@"h"] boolValue];
+    view.alpha = [saved[@"a"] doubleValue];
+    view.userInteractionEnabled = [saved[@"i"] boolValue];
+    id color = saved[@"c"];
+    view.backgroundColor = (color == [NSNull null]) ? nil : color;
+    if ([saved[@"z"] boolValue]) {
+        NSValue *frameValue = saved[@"f"];
+        if (frameValue) {
+            CGRect frame = view.frame;
+            frame.size.height = frameValue.CGRectValue.size.height;
+            view.frame = frame;
+        }
+    }
+    objc_setAssociatedObject(view, &kRLTopSavedKey, nil, OBJC_ASSOCIATION_ASSIGN);
+}
+
+static BOOL RLForceShortHeightConstraints(UIView *view) {
+    BOOL changed = NO;
+    NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray arrayWithArray:view.constraints];
+    if (view.superview) [constraints addObjectsFromArray:view.superview.constraints];
+    for (NSLayoutConstraint *constraint in constraints) {
+        BOOL sizesView = (constraint.firstItem == view
+                && constraint.firstAttribute == NSLayoutAttributeHeight
+                && constraint.secondItem == nil)
+            || (constraint.secondItem == view
+                && constraint.secondAttribute == NSLayoutAttributeHeight
+                && constraint.firstItem == nil);
+        if (!sizesView || constraint.constant <= 0.5 || constraint.constant > 80) continue;
+        if (!objc_getAssociatedObject(constraint, &kRLForcedHeightKey)) {
+            objc_setAssociatedObject(constraint, &kRLForcedHeightKey, @(constraint.constant), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        constraint.constant = 0;
+        changed = YES;
+    }
+    return changed;
+}
+
+static void RLCollapseTopView(UIView *view) {
+    if (![view isKindOfClass:[UIView class]] || RLContainsControl(view, 0)) return;
+    if (!RLIsThinBand(view)) {
+        if (view.bounds.size.height > 80) RLRestoreTopView(view);
+        return;
+    }
+    BOOL constrained = RLForceShortHeightConstraints(view);
+    NSDictionary *saved = objc_getAssociatedObject(view, &kRLTopSavedKey);
+    CGRect original = view.frame;
+    if (!saved) {
+        objc_setAssociatedObject(view, &kRLTopSavedKey, @{
+            @"h": @(view.hidden),
+            @"a": @(view.alpha),
+            @"i": @(view.userInteractionEnabled),
+            @"c": view.backgroundColor ?: (id)[NSNull null],
+            @"f": [NSValue valueWithCGRect:original],
+            @"z": @NO,
+        }, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!gCollapsedTopViews) gCollapsedTopViews = [NSHashTable weakObjectsHashTable];
+        [gCollapsedTopViews addObject:view];
+        static BOOL logged = NO;
+        if (!logged) {
+            logged = YES;
+            NSLog(@"[ReaderLock] collapsed reader top band %@ %@",
+                  NSStringFromClass(object_getClass(view)), NSStringFromCGRect(original));
+        }
+    }
+    view.hidden = YES;
+    view.alpha = 0;
+    view.userInteractionEnabled = NO;
+    view.backgroundColor = [UIColor clearColor];
+    if (!constrained && view.bounds.size.height > 0.5 && view.bounds.size.height <= 80) {
+        CGRect frame = view.frame;
+        frame.size.height = 0;
+        if (!CGRectEqualToRect(view.frame, frame)) {
+            view.frame = frame;
+            NSMutableDictionary *update = [objc_getAssociatedObject(view, &kRLTopSavedKey) mutableCopy];
+            update[@"z"] = @YES;
+            objc_setAssociatedObject(view, &kRLTopSavedKey, update, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+}
+
+static void RLCollapseReaderTopBand(id controller) {
+    if (!RLBooksActive() || !controller) return;
+    const char *keys[] = {
+        "blackStatusBar",
+        "blackStatusBarArea",
+        "unsafeAreaBrightnessView",
+        "unsafeAreaSepiaView",
+    };
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        id view = RLKVC(controller, keys[i]);
+        if ([view isKindOfClass:[UIView class]]) RLCollapseTopView(view);
+    }
+}
+
+static void RLRestoreBottomInset(UIViewController *vc) {
+    NSNumber *saved = objc_getAssociatedObject(vc, &kRLSavedBottomInsetKey);
+    if (!saved) return;
+    UIEdgeInsets insets = vc.additionalSafeAreaInsets;
+    insets.bottom = saved.doubleValue;
+    vc.additionalSafeAreaInsets = insets;
+    objc_setAssociatedObject(vc, &kRLSavedBottomInsetKey, nil, OBJC_ASSOCIATION_ASSIGN);
+}
+
+static void RLApplyBottomInset(UIViewController *vc) {
+    if ([vc isKindOfClass:[RLBottomBarController class]]) return;
+    NSNumber *saved = objc_getAssociatedObject(vc, &kRLSavedBottomInsetKey);
+    UIEdgeInsets insets = vc.additionalSafeAreaInsets;
+    if (!saved) {
+        saved = @(insets.bottom);
+        objc_setAssociatedObject(vc, &kRLSavedBottomInsetKey, saved, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!gInsetControllers) gInsetControllers = [NSHashTable weakObjectsHashTable];
+        [gInsetControllers addObject:vc];
+    }
+    CGFloat want = saved.doubleValue + kRLReaderBottomBand;
+    if (fabs(insets.bottom - want) <= 0.5) return;
+    insets.bottom = want;
+    vc.additionalSafeAreaInsets = insets;
+}
+
+static void RLShiftFooterView(UIView *view, CGFloat stripTop) {
+    if (![view isKindOfClass:[UIView class]] || !view.window || view.hidden || view.alpha < 0.01) return;
+    if ([view.window isKindOfClass:[RLBottomBarWindow class]]) return;
+    NSNumber *applied = objc_getAssociatedObject(view, &kRLFooterShiftKey);
+    CGFloat already = applied ? applied.doubleValue : 0;
+    if (already <= 0 && !CGAffineTransformIsIdentity(view.transform)) return;
+    CGRect inWindow = [view convertRect:view.bounds toView:nil];
+    CGFloat overlap = CGRectGetMaxY(inWindow) - stripTop;
+    CGFloat shift = already;
+    if (overlap > 0.5 && overlap < 120) shift = already + overlap;
+    else if (overlap < -0.5 && already > 0) shift = MAX(0, already + overlap);
+    else return;
+    if (fabs(shift - already) < 0.5) return;
+    view.transform = (shift <= 0.5) ? CGAffineTransformIdentity : CGAffineTransformMakeTranslation(0, -shift);
+    if (shift <= 0.5) {
+        objc_setAssociatedObject(view, &kRLFooterShiftKey, nil, OBJC_ASSOCIATION_ASSIGN);
+        return;
+    }
+    objc_setAssociatedObject(view, &kRLFooterShiftKey, @(shift), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!gFooterShiftedViews) gFooterShiftedViews = [NSHashTable weakObjectsHashTable];
+    [gFooterShiftedViews addObject:view];
+    static BOOL logged = NO;
+    if (!logged) {
+        logged = YES;
+        NSLog(@"[ReaderLock] lifted reader footer %.0f", shift);
+    }
+}
+
+static BOOL RLIsPageSurface(UIView *view) {
+    NSString *name = NSStringFromClass(object_getClass(view));
+    return [name containsString:@"WebView"] || [name containsString:@"PDFPage"] || [name isEqualToString:@"PDFView"];
+}
+
+static void RLLiftFooterTree(UIView *view, CGFloat stripTop, NSInteger depth) {
+    if (!view || depth > 8 || RLIsPageSurface(view)) return;
+    BOOL chrome = [view isKindOfClass:[UIToolbar class]]
+        || [view isKindOfClass:[UISlider class]]
+        || [view isKindOfClass:[UIProgressView class]]
+        || [view isKindOfClass:[UISegmentedControl class]];
+    if (chrome && view.bounds.size.height > 0.5 && view.bounds.size.height <= 80) {
+        CGRect inWindow = [view convertRect:view.bounds toView:nil];
+        if (CGRectGetMaxY(inWindow) > stripTop && CGRectGetMinY(inWindow) > stripTop - 100) {
+            RLShiftFooterView(view, stripTop);
+            return;
+        }
+    }
+    for (UIView *subview in view.subviews) RLLiftFooterTree(subview, stripTop, depth + 1);
+}
+
+static void RLLiftNamedFooter(UIViewController *vc, CGFloat stripTop) {
+    UIView *root = vc.isViewLoaded ? vc.view : nil;
+    const char *keys[] = {"pageLabel", "progressLabel", "chapterLabel"};
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        id view = RLKVC(vc, keys[i]);
+        if (![view isKindOfClass:[UIView class]]) continue;
+        UIView *target = view;
+        UIView *parent = target.superview;
+        if (parent && parent != root && parent.bounds.size.height > 0.5 && parent.bounds.size.height <= 64) {
+            target = parent;
+        }
+        if (target.bounds.size.height > 80) continue;
+        RLShiftFooterView(target, stripTop);
+    }
+}
+
+static void RLRestoreFooterTree(UIView *view, NSInteger depth) {
+    if (!view || depth > 8) return;
+    if (objc_getAssociatedObject(view, &kRLFooterShiftKey)) {
+        view.transform = CGAffineTransformIdentity;
+        objc_setAssociatedObject(view, &kRLFooterShiftKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    }
+    for (UIView *subview in view.subviews) RLRestoreFooterTree(subview, depth + 1);
+}
+
+static void RLApplyReaderChrome(id controller) {
+    if (gChromeDepth > 4 || !RLBooksActive() || !RLIsReaderChromeController(controller)) return;
+    RLHookChromeSelectors(controller);
+    gChromeDepth++;
+    RLCollapseReaderTopBand(controller);
+    if ([controller isKindOfClass:[UIViewController class]]) {
+        UIViewController *vc = controller;
+        RLApplyBottomInset(vc);
+        if (vc.isViewLoaded && vc.view.window) {
+            CGFloat stripTop = CGRectGetHeight(vc.view.window.bounds) - kRLReaderBottomBand;
+            RLLiftNamedFooter(vc, stripTop);
+            RLLiftFooterTree(vc.view, stripTop, 0);
+        }
+    }
+    gChromeDepth--;
+}
+
+static void RLRestoreReaderChrome(id controller) {
+    if (!RLIsReaderChromeController(controller)) return;
+    const char *keys[] = {
+        "blackStatusBar",
+        "blackStatusBarArea",
+        "unsafeAreaBrightnessView",
+        "unsafeAreaSepiaView",
+    };
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        id view = RLKVC(controller, keys[i]);
+        if ([view isKindOfClass:[UIView class]]) RLRestoreTopView(view);
+    }
+    if (![controller isKindOfClass:[UIViewController class]]) return;
+    UIViewController *vc = controller;
+    RLRestoreBottomInset(vc);
+    if (vc.isViewLoaded) RLRestoreFooterTree(vc.view, 0);
+}
+
+static void RLWalkControllers(UIViewController *vc, NSMutableSet *seen, NSInteger depth, BOOL apply) {
+    if (!vc || depth > 12 || [seen containsObject:vc]) return;
+    [seen addObject:vc];
+    if (apply) RLApplyReaderChrome(vc);
+    else RLRestoreReaderChrome(vc);
+    for (UIViewController *child in vc.childViewControllers) RLWalkControllers(child, seen, depth + 1, apply);
+    RLWalkControllers(vc.presentedViewController, seen, depth + 1, apply);
+}
+
+static void RLApplyReaderChromeNow(void) {
+    if (![NSThread isMainThread]) return;
+    BOOL apply = RLBooksActive();
+    for (UIWindow *window in RLApplicationWindows()) {
+        if ([window isKindOfClass:[RLBottomBarWindow class]]) continue;
+        RLWalkControllers(window.rootViewController, [NSMutableSet set], 0, apply);
+    }
+}
+
+static void RLRestoreAllReaderChrome(void) {
+    for (UIView *view in [gCollapsedTopViews allObjects]) RLRestoreTopView(view);
+    [gCollapsedTopViews removeAllObjects];
+    for (UIView *view in [gFooterShiftedViews allObjects]) {
+        view.transform = CGAffineTransformIdentity;
+        objc_setAssociatedObject(view, &kRLFooterShiftKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    }
+    [gFooterShiftedViews removeAllObjects];
+    for (UIViewController *vc in [gInsetControllers allObjects]) RLRestoreBottomInset(vc);
+    [gInsetControllers removeAllObjects];
+    RLApplyReaderChromeNow();
+}
+
+static void RLHookChromeMethod(Class cls, SEL sel) {
+    if (!cls || !sel) return;
+    NSString *token = [NSString stringWithFormat:@"%@ %s", NSStringFromClass(cls), sel_getName(sel)];
+    if (!gHookedChromeMethods) gHookedChromeMethods = [NSMutableSet set];
+    if ([gHookedChromeMethods containsObject:token]) return;
+
+    unsigned int count = 0;
+    Method *list = class_copyMethodList(cls, &count);
+    Method found = NULL;
+    for (unsigned int i = 0; i < count; i++) {
+        if (sel_isEqual(method_getName(list[i]), sel)) {
+            found = list[i];
+            break;
+        }
+    }
+    free(list);
+    if (!found) return;
+
+    char ret[8] = {0};
+    method_getReturnType(found, ret, sizeof(ret));
+    if (ret[0] != 'v') {
+        [gHookedChromeMethods addObject:token];
+        return;
+    }
+    unsigned int args = method_getNumberOfArguments(found);
+    if (args == 2) {
+        void (*original)(id, SEL) = (void (*)(id, SEL))method_getImplementation(found);
+        IMP replacement = imp_implementationWithBlock(^void(id self) {
+            original(self, sel);
+            if (RLBooksActive()) RLCollapseReaderTopBand(self);
+        });
+        method_setImplementation(found, replacement);
+        [gHookedChromeMethods addObject:token];
+        return;
+    }
+    if (args == 3) {
+        void (*original)(id, SEL, id) = (void (*)(id, SEL, id))method_getImplementation(found);
+        IMP replacement = imp_implementationWithBlock(^void(id self, id value) {
+            original(self, sel, value);
+            if (RLBooksActive()) RLCollapseReaderTopBand(self);
+        });
+        method_setImplementation(found, replacement);
+        [gHookedChromeMethods addObject:token];
+    }
+}
+
+static void RLHookChromeSelectorsOnClass(Class cls) {
+    if (!cls) return;
+    NSString *name = NSStringFromClass(cls);
+    if (!gScannedChromeClasses) gScannedChromeClasses = [NSMutableSet set];
+    if ([gScannedChromeClasses containsObject:name]) return;
+    [gScannedChromeClasses addObject:name];
+
+    const char *names[] = {
+        "addBlackStatusBarAreaToViewIfNeeded:",
+        "updateStatusBarAreaColor",
+        "setBlackStatusBar:",
+        "setBlackStatusBarArea:",
+        "setUnsafeAreaBrightnessView:",
+        "setUnsafeAreaSepiaView:",
+    };
+    for (size_t s = 0; s < sizeof(names) / sizeof(names[0]); s++) {
+        RLHookChromeMethod(cls, sel_registerName(names[s]));
+    }
+}
+
+static void RLHookChromeSelectors(id object) {
+    Class stop = [UIViewController class];
+    for (Class cls = object_getClass(object); cls && cls != stop; cls = class_getSuperclass(cls)) {
+        RLHookChromeSelectorsOnClass(cls);
+    }
+}
+
+static void RLInstallReaderChromeHooks(void) {
+    int capacity = objc_getClassList(NULL, 0);
+    if (capacity <= 0) return;
+    Class *classes = (Class *)malloc(sizeof(Class) * (size_t)capacity);
+    if (!classes) return;
+    int reported = objc_getClassList(classes, capacity);
+    int limit = reported < capacity ? reported : capacity;
+    for (int i = 0; i < limit; i++) RLHookChromeSelectorsOnClass(classes[i]);
+    free(classes);
+}
+
+static CGRect (*gRLOrigStatusBarFrame)(id, SEL) = NULL;
+static BOOL (*gRLOrigStatusBarHidden)(id, SEL) = NULL;
+
+static CGRect RLReplacementStatusBarFrame(id self, SEL cmd) {
+    if (RLBooksActive()) return CGRectZero;
+    return gRLOrigStatusBarFrame ? gRLOrigStatusBarFrame(self, cmd) : CGRectZero;
+}
+
+static BOOL RLReplacementStatusBarHidden(id self, SEL cmd) {
+    if (RLBooksActive()) return YES;
+    return gRLOrigStatusBarHidden ? gRLOrigStatusBarHidden(self, cmd) : YES;
+}
+
+static void RLHookApplicationStatusBar(void) {
+    static BOOL hooked = NO;
+    if (hooked) return;
+    hooked = YES;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    Method frame = class_getInstanceMethod([UIApplication class], @selector(statusBarFrame));
+    Method hidden = class_getInstanceMethod([UIApplication class], @selector(isStatusBarHidden));
+#pragma clang diagnostic pop
+    if (frame && RLIsNoArgGetter(frame, '{', 0, 0, 0)) {
+        gRLOrigStatusBarFrame = (CGRect (*)(id, SEL))method_getImplementation(frame);
+        method_setImplementation(frame, (IMP)RLReplacementStatusBarFrame);
+    }
+    if (hidden && RLIsNoArgGetter(hidden, 'B', 'c', 0, 0)) {
+        gRLOrigStatusBarHidden = (BOOL (*)(id, SEL))method_getImplementation(hidden);
+        method_setImplementation(hidden, (IMP)RLReplacementStatusBarHidden);
+    }
+}
+
 #pragma mark - Window lifecycle
 
 %hook UIViewController
@@ -821,6 +1300,21 @@ completionHandler:(void (^)(BOOL success))completion {
     id result = %orig;
     if (result) RLHookStatusMethods(object_getClass(result));
     return result;
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    if (RLBooksActive()) RLApplyReaderChrome(self);
+    else RLRestoreReaderChrome(self);
+}
+
+%end
+
+%hook NSLayoutConstraint
+
+- (void)setConstant:(CGFloat)constant {
+    if (RLBooksActive() && constant != 0 && objc_getAssociatedObject(self, &kRLForcedHeightKey)) constant = 0;
+    %orig(constant);
 }
 
 %end
@@ -893,6 +1387,8 @@ completionHandler:(void (^)(BOOL success))completion {
     @autoreleasepool {
         dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_LAZY);
         %init;
+        RLHookApplicationStatusBar();
+        RLInstallReaderChromeHooks();
         NSLog(@"[ReaderLock] reader component loaded in %@", [NSBundle mainBundle].bundleIdentifier);
 
         gBooksReaderState = RLReadDarwinState();
