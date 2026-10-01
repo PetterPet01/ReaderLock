@@ -1,12 +1,16 @@
 # Build status
 
 Date: 2026-10-01
-Release candidate: 0.1.11
+Release candidate: 0.1.12
 Target: iPhone 7 (A10 / arm64), iOS 15.x, Dopamine rootless / ElleKit.
+
+## What changed from 0.1.11
+
+On device, 0.1.11 showed the system status bar on every reader screen, including MapleRead's home screen and the open book, where it had stayed hidden. Stopping the status-bar handoff made UIKit ask the tab bar, and the tab bar's answer is visible, so the clock came back and kept being asked for again on each screen. 0.1.12 leaves that handoff in place, still forces every controller that owns the answer to hide the bar, and hides the status-bar view itself when it appears. The bottom time line is unchanged. This has not been run on a phone.
 
 ## What changed from 0.1.10
 
-On device, the system status bar stayed hidden on MapleRead's home screen and on an open book, then came back on other panels such as Go to Exchange. Those panels answer the status-bar query themselves, and the tab bar forwards to them. 0.1.11 stops that forwarding and forces every controller that owns the answer to hide the bar for the whole time Reader Lock is on. The bottom time line is unchanged: MapleRead shows it only while a book is open. This has not been run on a phone.
+On device, the system status bar stayed hidden on MapleRead's home screen and on an open book, then came back on other panels such as Go to Exchange. Those panels answer the status-bar query themselves, and the tab bar forwards to them. 0.1.11 tried to stop that forwarding. On device that showed the bar everywhere, so 0.1.12 does not.
 
 ## What changed from 0.1.9
 
@@ -38,11 +42,11 @@ Once the chosen reader is actually in front, Reader Lock sets Powercuff's `Power
 
 `make clean package FINALPACKAGE=1` with Theos, the L1ghtmann iOS toolchain, and the iPhoneOS 15.6 SDK produces:
 
-`packages/com.quan.readerlock_0.1.11_iphoneos-arm64.deb`
+`packages/com.quan.readerlock_0.1.12_iphoneos-arm64.deb`
 
 `scripts/verify-deb.sh` then checks that package:
 
-- Debian architecture `iphoneos-arm64` (rootless), version 0.1.11
+- Debian architecture `iphoneos-arm64` (rootless), version 0.1.12
 - `ReaderLockSB.dylib` and `ReaderLockBooks.dylib` are arm64 Mach-O and have `LC_CODE_SIGNATURE`
 - the Mono, Color, and Use Maple Control Center bundles are present and signed the same way
 - every data-archive path is under `/var/jb`

@@ -3,6 +3,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <LocalAuthentication/LocalAuthentication.h>
 #import <objc/runtime.h>
+#import <string.h>
 #import <dlfcn.h>
 #import <notify.h>
 #import <SystemConfiguration/SystemConfiguration.h>
@@ -99,20 +100,21 @@ static const CGFloat kRLReaderBottomBand = 22.0;
 @interface RLBottomBarWindow : UIWindow
 @end
 
-// UIKit walks childViewControllerForStatusBarHidden from the window root and
-// only then asks prefersStatusBarHidden on the controller where that walk
-// stops. A tab or navigation controller returns its visible child, so a leaf
-// that answers NO (MapleRead's exchange and web panels do) shows the clock
-// even after UIViewController itself was replaced. Stop the walk on every
-// class that owns it, and force YES on every class that owns the answer.
+// UIKit walks childViewControllerForStatusBarHidden until a controller returns
+// nil, then asks prefersStatusBarHidden there. Home and the open book already
+// answer hidden. Returning nil from the tab bar stops that walk early, and the
+// tab bar's own answer is visible, which is why 0.1.11 showed the clock on
+// every screen. Leave the walk alone. Force YES only on a class that owns
+// prefersStatusBarHidden, so a leaf that used to answer NO (Exchange) hides
+// too, and the screens that already hid stay hidden.
 // A miss is not remembered: a newer method list can be invisible to
 // class_copyMethodList and still be the one objc_msgSend runs.
 static const void *kRLOrigPrefersHidden = &kRLOrigPrefersHidden;
-static const void *kRLOrigStatusChild = &kRLOrigStatusChild;
-static const void *kRLOrigStatusStyleChild = &kRLOrigStatusStyleChild;
 static const void *kRLOrigStatusAnimation = &kRLOrigStatusAnimation;
 static const void *kRLOrigSetHidden = &kRLOrigSetHidden;
 static const void *kRLOrigSetAlpha = &kRLOrigSetAlpha;
+static const void *kRLOrigLayout = &kRLOrigLayout;
+static void RLSuppressStatusBarView(UIView *view);
 
 static BOOL RLInheritsViewController(Class cls) {
     Class viewController = [UIViewController class];
@@ -173,21 +175,6 @@ static BOOL RLForcedPrefersStatusBarHidden(id self, SEL cmd) {
     return original ? original(self, cmd) : NO;
 }
 
-static id RLForcedStatusBarChild(id self, SEL cmd) {
-    if (RLBooksActive()) {
-        RLNoteStatusBarKeptHidden();
-        return nil;
-    }
-    id (*original)(id, SEL) = (id (*)(id, SEL))RLOriginalIMP(self, kRLOrigStatusChild);
-    return original ? original(self, cmd) : nil;
-}
-
-static id RLForcedStatusBarStyleChild(id self, SEL cmd) {
-    if (RLBooksActive()) return nil;
-    id (*original)(id, SEL) = (id (*)(id, SEL))RLOriginalIMP(self, kRLOrigStatusStyleChild);
-    return original ? original(self, cmd) : nil;
-}
-
 static NSInteger RLForcedStatusBarAnimation(id self, SEL cmd) {
     if (RLBooksActive()) return UIStatusBarAnimationNone;
     NSInteger (*original)(id, SEL) = (NSInteger (*)(id, SEL))RLOriginalIMP(self, kRLOrigStatusAnimation);
@@ -206,6 +193,12 @@ static void RLForcedStatusBarViewAlpha(id self, SEL cmd, CGFloat alpha) {
     if (original) original(self, cmd, alpha);
 }
 
+static void RLForcedStatusBarLayout(id self, SEL cmd) {
+    void (*original)(id, SEL) = (void (*)(id, SEL))RLOriginalIMP(self, kRLOrigLayout);
+    if (original) original(self, cmd);
+    if (RLBooksActive()) RLSuppressStatusBarView(self);
+}
+
 static void RLInstallOwnedMethod(Class cls, SEL sel, IMP replacement, const void *key, BOOL (*accepts)(Method)) {
     if (!cls || !replacement || !RLClassOwnsInstanceMethod(cls, sel)) return;
     Method method = class_getInstanceMethod(cls, sel);
@@ -222,10 +215,6 @@ static BOOL RLAcceptsHiddenGetter(Method method) {
     return RLIsNoArgGetter(method, 'B', 'c', 0, 0);
 }
 
-static BOOL RLAcceptsObjectGetter(Method method) {
-    return RLIsNoArgGetter(method, '@', 0, 0, 0);
-}
-
 static BOOL RLAcceptsAnimationGetter(Method method) {
     return RLIsNoArgGetter(method, 'q', 'i', 'l', 'Q');
 }
@@ -234,57 +223,63 @@ static BOOL RLAcceptsVoidSetter(Method method) {
     return RLIsVoidMethod(method, 3);
 }
 
+static BOOL RLAcceptsLayout(Method method) {
+    return RLIsVoidMethod(method, 2);
+}
+
 static void RLHookStatusMethods(Class cls) {
     RLInstallOwnedMethod(cls, @selector(prefersStatusBarHidden), (IMP)RLForcedPrefersStatusBarHidden, kRLOrigPrefersHidden, RLAcceptsHiddenGetter);
-    RLInstallOwnedMethod(cls, @selector(childViewControllerForStatusBarHidden), (IMP)RLForcedStatusBarChild, kRLOrigStatusChild, RLAcceptsObjectGetter);
-    RLInstallOwnedMethod(cls, @selector(childViewControllerForStatusBarStyle), (IMP)RLForcedStatusBarStyleChild, kRLOrigStatusStyleChild, RLAcceptsObjectGetter);
     RLInstallOwnedMethod(cls, @selector(preferredStatusBarUpdateAnimation), (IMP)RLForcedStatusBarAnimation, kRLOrigStatusAnimation, RLAcceptsAnimationGetter);
 }
 
-static Class gRLStatusBarClasses[8];
-static int gRLStatusBarClassCount = 0;
+// Do not cache this in dispatch_once. The first call can run before UIKit has
+// realized the status-bar classes, and a once-block would then remember an
+// empty list for the rest of the process. The answer is stored on the class
+// the first time that class is actually seen.
+static char kRLStatusBarClassCacheKey;
 
-static void RLRememberStatusBarClass(const char *name) {
-    if (gRLStatusBarClassCount >= 8) return;
-    Class cls = objc_getClass(name);
-    if (!cls) return;
-    for (int i = 0; i < gRLStatusBarClassCount; i++) {
-        if (gRLStatusBarClasses[i] == cls) return;
-    }
-    gRLStatusBarClasses[gRLStatusBarClassCount++] = cls;
-}
-
-static void RLCacheStatusBarClasses(void) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        RLRememberStatusBarClass("UIStatusBar");
-        RLRememberStatusBarClass("UIStatusBarWindow");
-        RLRememberStatusBarClass("_UIStatusBar");
-        RLRememberStatusBarClass("UIStatusBar_Modern");
-        RLRememberStatusBarClass("UIStatusBar_Base");
-        RLRememberStatusBarClass("UIStatusBar_Placeholder");
-    });
-}
-
-static BOOL RLIsExactStatusBarClass(Class cls) {
+static BOOL RLClassIsStatusBarClass(Class cls) {
     if (!cls) return NO;
-    RLCacheStatusBarClasses();
-    for (int i = 0; i < gRLStatusBarClassCount; i++) {
-        if (gRLStatusBarClasses[i] == cls) return YES;
+    NSNumber *cached = objc_getAssociatedObject(cls, &kRLStatusBarClassCacheKey);
+    if (cached) return cached.boolValue;
+    BOOL match = NO;
+    for (Class cursor = cls; cursor && cursor != [UIView class]; cursor = class_getSuperclass(cursor)) {
+        const char *name = class_getName(cursor);
+        if (!name) continue;
+        if (strncmp(name, "UIStatusBar", 11) == 0 || strncmp(name, "_UIStatusBar", 12) == 0) {
+            match = YES;
+            break;
+        }
     }
-    return NO;
+    objc_setAssociatedObject(cls, &kRLStatusBarClassCacheKey, @(match), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return match;
 }
 
-// Only a status-bar class that implements setHidden:/setAlpha: itself is
-// replaced. One that inherits UIView's method is handled by the UIView hook,
-// which refuses every other view. Hooking the inherited method by the
-// status-bar class name would attach to UIView and hide the whole screen.
+// Only a status-bar class that implements the method itself is replaced. One
+// that inherits UIView's method is handled by the UIView hook, which refuses
+// every other view. Hooking the inherited method here would attach to UIView
+// and hide the whole screen.
+static void RLHookStatusBarViewClass(Class cls) {
+    if (!RLClassIsStatusBarClass(cls)) return;
+    RLInstallOwnedMethod(cls, @selector(setHidden:), (IMP)RLForcedStatusBarViewHidden, kRLOrigSetHidden, RLAcceptsVoidSetter);
+    RLInstallOwnedMethod(cls, @selector(setAlpha:), (IMP)RLForcedStatusBarViewAlpha, kRLOrigSetAlpha, RLAcceptsVoidSetter);
+    RLInstallOwnedMethod(cls, @selector(layoutSubviews), (IMP)RLForcedStatusBarLayout, kRLOrigLayout, RLAcceptsLayout);
+}
+
 static void RLHookStatusBarViewSetters(void) {
-    RLCacheStatusBarClasses();
-    for (int i = 0; i < gRLStatusBarClassCount; i++) {
-        Class cls = gRLStatusBarClasses[i];
-        RLInstallOwnedMethod(cls, @selector(setHidden:), (IMP)RLForcedStatusBarViewHidden, kRLOrigSetHidden, RLAcceptsVoidSetter);
-        RLInstallOwnedMethod(cls, @selector(setAlpha:), (IMP)RLForcedStatusBarViewAlpha, kRLOrigSetAlpha, RLAcceptsVoidSetter);
+    static const char *names[] = {
+        "UIStatusBar",
+        "UIStatusBarWindow",
+        "_UIStatusBar",
+        "UIStatusBar_Modern",
+        "UIStatusBar_Base",
+        "UIStatusBar_Placeholder",
+        "UIStatusBarForegroundView",
+        "UIStatusBarBackgroundView",
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        Class cls = objc_getClass(names[i]);
+        if (cls) RLHookStatusBarViewClass(cls);
     }
 }
 
@@ -317,7 +312,7 @@ static void RLRefreshStatusBarAppearance(void) {
 }
 
 static BOOL RLIsSystemStatusBarView(UIView *view) {
-    return RLIsExactStatusBarClass(object_getClass(view));
+    return RLClassIsStatusBarClass(object_getClass(view));
 }
 
 static char kRLStatusBarSavedKey;
@@ -832,11 +827,6 @@ static BOOL RLIsEscapeViewController(UIViewController *vc) {
         NSLog(@"[ReaderLock] blocked reader escape UI %@", NSStringFromClass([viewControllerToPresent class]));
         if (completion) completion();
         return;
-    }
-    // A full-screen present becomes the start of the status-bar walk. Keep the
-    // presenter, whose answer is already hidden, as the owner.
-    if (RLBooksActive() && viewControllerToPresent) {
-        viewControllerToPresent.modalPresentationCapturesStatusBarAppearance = NO;
     }
     %orig;
 }
@@ -1547,7 +1537,6 @@ static void RLHookApplicationStatusBar(void) {
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     if ([self isKindOfClass:[RLBottomBarController class]]) return;
-    if (RLBooksActive()) [self setNeedsStatusBarAppearanceUpdate];
     RLQueueBottomBarRefresh();
 }
 
@@ -1620,16 +1609,20 @@ static void RLHookApplicationStatusBar(void) {
 
 - (void)didMoveToWindow {
     %orig;
-    if (RLBooksActive() && RLIsExactStatusBarClass(object_getClass(self))) RLSuppressStatusBarView(self);
+    if (!RLBooksActive()) return;
+    Class cls = object_getClass(self);
+    if (!RLClassIsStatusBarClass(cls)) return;
+    RLHookStatusBarViewClass(cls);
+    RLSuppressStatusBarView(self);
 }
 
 - (void)setHidden:(BOOL)hidden {
-    if (RLBooksActive() && RLIsExactStatusBarClass(object_getClass(self))) hidden = YES;
+    if (RLBooksActive() && RLClassIsStatusBarClass(object_getClass(self))) hidden = YES;
     %orig(hidden);
 }
 
 - (void)setAlpha:(CGFloat)alpha {
-    if (RLBooksActive() && RLIsExactStatusBarClass(object_getClass(self))) alpha = 0;
+    if (RLBooksActive() && RLClassIsStatusBarClass(object_getClass(self))) alpha = 0;
     %orig(alpha);
 }
 
