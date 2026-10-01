@@ -107,8 +107,9 @@ static const CGFloat kRLReaderBottomBand = 22.0;
 // every screen. Leave the walk alone. Every UIViewController subclass answers
 // hidden while Reader Lock is on: owners are replaced, and classes that never
 // implemented the method get one, so Exchange cannot keep the native bar up.
-// Appear methods that MapleRead owns still refresh that answer, because a
-// Logos hook on UIViewController does not run when those overrides skip super.
+// Do not replace owned viewWillAppear:/viewDidAppear:. A shared original
+// lookup walks from the instance class, so a parent and child that both own
+// the method recurse through super, and MapleRead never leaves its splash.
 // A miss is not remembered: a newer method list can be invisible to
 // class_copyMethodList and still be the one objc_msgSend runs.
 static const void *kRLOrigPrefersHidden = &kRLOrigPrefersHidden;
@@ -116,16 +117,10 @@ static const void *kRLOrigStatusAnimation = &kRLOrigStatusAnimation;
 static const void *kRLOrigSetHidden = &kRLOrigSetHidden;
 static const void *kRLOrigSetAlpha = &kRLOrigSetAlpha;
 static const void *kRLOrigLayout = &kRLOrigLayout;
-static const void *kRLOrigViewWillAppear = &kRLOrigViewWillAppear;
-static const void *kRLOrigViewDidAppear = &kRLOrigViewDidAppear;
 static void RLSuppressStatusBarView(UIView *view);
 static void RLApplySystemStatusBarHidden(BOOL hidden);
 static void RLQueueBottomBarRefresh(void);
 static void RLHookStatusMethods(Class cls);
-
-@interface RLBottomBarController : UIViewController
-@property(nonatomic, strong) UILabel *statusLabel;
-@end
 
 static BOOL RLInheritsViewController(Class cls) {
     Class viewController = [UIViewController class];
@@ -238,31 +233,6 @@ static BOOL RLAcceptsLayout(Method method) {
     return RLIsVoidMethod(method, 2);
 }
 
-static void RLForcedViewWillAppear(id self, SEL cmd, BOOL animated) {
-    void (*original)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))RLOriginalIMP(self, kRLOrigViewWillAppear);
-    if (original) original(self, cmd, animated);
-    if (!RLBooksActive() || [self isKindOfClass:[RLBottomBarController class]]) return;
-    RLHookStatusMethods(object_getClass(self));
-    [(UIViewController *)self setNeedsStatusBarAppearanceUpdate];
-    RLApplySystemStatusBarHidden(YES);
-}
-
-static void RLForcedViewDidAppear(id self, SEL cmd, BOOL animated) {
-    void (*original)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))RLOriginalIMP(self, kRLOrigViewDidAppear);
-    if (original) original(self, cmd, animated);
-    if ([self isKindOfClass:[RLBottomBarController class]]) return;
-    if (RLBooksActive()) {
-        RLHookStatusMethods(object_getClass(self));
-        [(UIViewController *)self setNeedsStatusBarAppearanceUpdate];
-        RLApplySystemStatusBarHidden(YES);
-    }
-    RLQueueBottomBarRefresh();
-}
-
-static BOOL RLAcceptsAppear(Method method) {
-    return RLIsVoidMethod(method, 3);
-}
-
 static void RLEnsurePrefersHidden(Class cls) {
     if (!cls) return;
     SEL sel = @selector(prefersStatusBarHidden);
@@ -289,8 +259,6 @@ static void RLHookStatusMethods(Class cls) {
     if (!cls || cls == [UIViewController class]) return;
     RLEnsurePrefersHidden(cls);
     RLInstallOwnedMethod(cls, @selector(preferredStatusBarUpdateAnimation), (IMP)RLForcedStatusBarAnimation, kRLOrigStatusAnimation, RLAcceptsAnimationGetter);
-    RLInstallOwnedMethod(cls, @selector(viewWillAppear:), (IMP)RLForcedViewWillAppear, kRLOrigViewWillAppear, RLAcceptsAppear);
-    RLInstallOwnedMethod(cls, @selector(viewDidAppear:), (IMP)RLForcedViewDidAppear, kRLOrigViewDidAppear, RLAcceptsAppear);
 }
 
 // Do not cache this in dispatch_once. The first call can run before UIKit has
@@ -439,6 +407,10 @@ static void RLSuppressStatusBarView(UIView *view) {
 
 - (void)becomeKeyWindow {}
 
+@end
+
+@interface RLBottomBarController : UIViewController
+@property(nonatomic, strong) UILabel *statusLabel;
 @end
 
 @implementation RLBottomBarController
