@@ -422,10 +422,11 @@ static void RLForceReaderForegroundIfNeeded(void) {
 
 #pragma mark - Powercuff
 
-// PowerMode 4 is Powercuff's Heavy profile. RequireLowPowerMode stays off so
-// Heavy does not depend on Low Power Mode. This snapshot is ReaderLock's.
-// YukiPower's state file, Choicy's deny list, and a respring are not used:
-// denying this tweak and restarting SpringBoard would drop the kiosk.
+// PowerMode 3 is Powercuff's Moderate profile (0 None, 1 Nominal, 2 Light,
+// 3 Moderate, 4 Heavy). RequireLowPowerMode stays off so Moderate does not
+// depend on Low Power Mode. This snapshot is ReaderLock's. YukiPower's state
+// file, Choicy's deny list, and a respring are not used: denying this tweak
+// and restarting SpringBoard would drop the kiosk.
 @interface NSObject (ReaderLockBatterySaver)
 + (id)batterySaver;
 - (BOOL)setPowerMode:(NSInteger)mode error:(NSError **)error;
@@ -554,15 +555,15 @@ static void RLEngageBatterySaver(void) {
         NSLog(@"[ReaderLock] power snapshot could not be saved; Powercuff and Low Power Mode left unchanged");
         return;
     }
-    // Leave Heavy in place if Low Power Mode cannot be turned on. Undoing the
-    // Powercuff write was how a failed Low Power Mode call hid a good one.
-    RLSetPowercuffPref(RLPowerModeKey, @4);
+    // Leave Moderate in place if Low Power Mode cannot be turned on. Undoing
+    // the Powercuff write was how a failed Low Power Mode call hid a good one.
+    RLSetPowercuffPref(RLPowerModeKey, @3);
     RLSetPowercuffPref(RLRequireLPMKey, @NO);
     RLSyncPowercuff();
     if (!RLSetLowPowerMode(1)) {
-        NSLog(@"[ReaderLock] Low Power Mode could not be enabled; Powercuff Heavy stays on");
+        NSLog(@"[ReaderLock] Low Power Mode could not be enabled; Powercuff Moderate stays on");
     }
-    NSLog(@"[ReaderLock] Powercuff Heavy engaged");
+    NSLog(@"[ReaderLock] Powercuff Moderate engaged");
 }
 
 #pragma mark - State machine

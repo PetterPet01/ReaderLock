@@ -1,8 +1,8 @@
 Package: com.quan.readerlock
 Name: ReaderLock
-Version: 0.1.15
+Version: 0.1.16
 Architecture: iphoneos-arm
-Description: One-tap reader appliance for Apple Books or MapleRead SE, with Mono/Color controls, notification suppression, an app-launch firewall, authenticated exit, and fail-open recovery. Wi-Fi and cellular stay available. While reading, Powercuff is set to Heavy and Low Power Mode is on; both are restored on exit. While Reader Lock is on, the native iPhone status bar stays hidden on every screen inside the reader. A bottom line shows the time, Wi-Fi, and battery, in a color that follows the page theme. An open book's own top strip is collapsed, and its progress text stays above that line. In MapleRead the line is only shown while a book is open.
+Description: One-tap reader appliance for Apple Books or MapleRead SE, with Mono/Color controls, notification suppression, an app-launch firewall, authenticated exit, and fail-open recovery. Wi-Fi and cellular stay available. While reading, Powercuff is set to Moderate and Low Power Mode is on; both are restored on exit. While Reader Lock is on, the native iPhone status bar stays hidden on every screen inside the reader. A bottom line shows the time, Wi-Fi, and battery, in a color that follows the page theme. An open book's own top strip is collapsed, and its progress text stays above that line. In MapleRead the line is only shown while a book is open.
 Maintainer: Quân / OpenAI-assisted prototype
 Author: Quân / OpenAI-assisted prototype
 Section: Tweaks

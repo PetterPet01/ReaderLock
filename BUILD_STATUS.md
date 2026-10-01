@@ -1,8 +1,12 @@
 # Build status
 
 Date: 2026-10-01
-Release candidate: 0.1.15
+Release candidate: 0.1.16
 Target: iPhone 7 (A10 / arm64), iOS 15.x, Dopamine rootless / ElleKit.
+
+## What changed from 0.1.15
+
+Once the reader is in front, Powercuff is set to Moderate (`PowerMode` 3) instead of Heavy (`PowerMode` 4). Low Power Mode, the snapshot, and the no-Choicy / no-respring rule are unchanged. This has not been run on a phone.
 
 ## What changed from 0.1.14
 
@@ -54,11 +58,11 @@ Once the chosen reader is actually in front, Reader Lock sets Powercuff's `Power
 
 `make clean package FINALPACKAGE=1` with Theos, the L1ghtmann iOS toolchain, and the iPhoneOS 15.6 SDK produces:
 
-`packages/com.quan.readerlock_0.1.15_iphoneos-arm64.deb`
+`packages/com.quan.readerlock_0.1.16_iphoneos-arm64.deb`
 
 `scripts/verify-deb.sh` then checks that package:
 
-- Debian architecture `iphoneos-arm64` (rootless), version 0.1.15
+- Debian architecture `iphoneos-arm64` (rootless), version 0.1.16
 - `ReaderLockSB.dylib` and `ReaderLockBooks.dylib` are arm64 Mach-O and have `LC_CODE_SIGNATURE`
 - the Mono, Color, and Use Maple Control Center bundles are present and signed the same way
 - every data-archive path is under `/var/jb`
@@ -68,4 +72,4 @@ That is a static package check. It does not run the README's device procedure, a
 
 ## Reproducible binary build
 
-GitHub Actions (`.github/workflows/build.yml`) installs the same pinned toolchain and iPhoneOS 15.6 SDK on `ubuntu-24.04`, runs `make package FINALPACKAGE=1`, runs `scripts/verify-deb.sh`, and uploads the `.deb`. A respring is still required after install. A hard reboot drops tweak enforcement. 0.1.5 does not change radios, so a reboot does not need to restore them. A leftover 0.1.3 radio snapshot, and a 0.1.5 power snapshot, are still only consumed when the tweak actually loads. Heavy limits CPU, so the reader can feel slower. It does not turn the radios off.
+GitHub Actions (`.github/workflows/build.yml`) installs the same pinned toolchain and iPhoneOS 15.6 SDK on `ubuntu-24.04`, runs `make package FINALPACKAGE=1`, runs `scripts/verify-deb.sh`, and uploads the `.deb`. A respring is still required after install. A hard reboot drops tweak enforcement. 0.1.5 does not change radios, so a reboot does not need to restore them. A leftover 0.1.3 radio snapshot, and a 0.1.5 power snapshot, are still only consumed when the tweak actually loads. Moderate still limits CPU, so the reader can feel slower. It does not turn the radios off.

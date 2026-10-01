@@ -20,8 +20,8 @@ if [[ "$arch" != "iphoneos-arm64" ]]; then
 fi
 
 version="$(dpkg-deb -f "$deb" Version)"
-if [[ "$version" != "0.1.15" ]]; then
-  echo "Version is '$version', expected 0.1.15" >&2
+if [[ "$version" != "0.1.16" ]]; then
+  echo "Version is '$version', expected 0.1.16" >&2
   exit 1
 fi
 
