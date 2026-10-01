@@ -81,6 +81,8 @@ static inline BOOL RLActive(void) {
     return RLStateIsActive(gReaderState);
 }
 
+static void RLSyncAppStatusBarAssertion(void);
+
 static void RLPublishState(RLReaderState state) {
     gReaderState = state;
     if (gStateToken < 0) {
@@ -91,6 +93,58 @@ static void RLPublishState(RLReaderState state) {
     }
     notify_post(RLStateNotification);
     NSLog(@"[ReaderLock] state -> %llu", (unsigned long long)state);
+    RLSyncAppStatusBarAssertion();
+}
+
+#pragma mark - Native status bar (SpringBoard)
+
+// The native top bar (carrier, Wi-Fi, clock, DND, rotation lock, battery) is
+// the in-app bar SpringBoard shows for the frontmost scene. MapleRead answers
+// that query per screen, so Exchange can bring the clock back. Do not stop
+// UIKit's childViewControllerForStatusBarHidden walk (0.1.11). Hide it here
+// with selectors that exist on both the iOS 14 and iOS 17 dumps, and take
+// SBAppStatusBarSettingsAssertion only when that iOS 14-shaped init exists.
+static id gAppStatusBarAssertion = nil;
+
+static BOOL RLHidingSystemStatusBar(void) {
+    return gReaderState == RLReaderStateArming || RLActive();
+}
+
+static void RLReleaseAppStatusBarAssertion(void) {
+    id assertion = gAppStatusBarAssertion;
+    gAppStatusBarAssertion = nil;
+    if (!assertion) return;
+    SEL sel = @selector(invalidate);
+    if (![assertion respondsToSelector:sel]) return;
+    void (*fn)(id, SEL) = (void (*)(id, SEL))[assertion methodForSelector:sel];
+    if (fn) fn(assertion, sel);
+}
+
+static void RLAcquireAppStatusBarAssertion(void) {
+    if (gAppStatusBarAssertion) return;
+    Class cls = NSClassFromString(@"SBAppStatusBarSettingsAssertion");
+    if (!cls) return;
+    SEL initSel = NSSelectorFromString(@"initWithStatusBarHidden:atLevel:reason:");
+    if (!initSel || ![cls instancesRespondToSelector:initSel]) return;
+    id allocated = [cls alloc];
+    if (!allocated) return;
+    id (*initFn)(id, SEL, BOOL, unsigned long long, id) =
+        (id (*)(id, SEL, BOOL, unsigned long long, id))[allocated methodForSelector:initSel];
+    if (!initFn) return;
+    id assertion = initFn(allocated, initSel, YES, 5ULL, @"ReaderLock");
+    if (!assertion) return;
+    SEL acquireSel = @selector(acquire);
+    if ([assertion respondsToSelector:acquireSel]) {
+        void (*fn)(id, SEL) = (void (*)(id, SEL))[assertion methodForSelector:acquireSel];
+        if (fn) fn(assertion, acquireSel);
+    }
+    gAppStatusBarAssertion = assertion;
+    NSLog(@"[ReaderLock] native status bar assertion acquired");
+}
+
+static void RLSyncAppStatusBarAssertion(void) {
+    if (RLHidingSystemStatusBar()) RLAcquireAppStatusBarAssertion();
+    else RLReleaseAppStatusBarAssertion();
 }
 
 #pragma mark - Generic dynamic Objective-C calls
@@ -833,6 +887,34 @@ static void RLRecoverIfNeeded(void) {
 
 - (void)saveScreenshots {
     if (RLActive()) return;
+    %orig;
+}
+
+%end
+
+%hook SBDeviceApplicationSceneStatusBarStateProvider
+
+- (BOOL)_statusBarHiddenGivenFallbackOrientation:(long long)orientation {
+    if (RLHidingSystemStatusBar()) return YES;
+    return %orig;
+}
+
+- (double)_statusBarAlpha {
+    if (RLHidingSystemStatusBar()) return 0;
+    return %orig;
+}
+
+%end
+
+%hook SBMainDisplaySceneLayoutStatusBarView
+
+- (BOOL)isStatusBarEffectivelyHidden {
+    if (RLHidingSystemStatusBar()) return YES;
+    return %orig;
+}
+
+- (void)sceneWithIdentifier:(id)identifier didChangeStatusBarHiddenTo:(BOOL)hidden withAnimation:(long long)animation {
+    if (RLHidingSystemStatusBar()) hidden = YES;
     %orig;
 }
 

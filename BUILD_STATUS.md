@@ -1,8 +1,12 @@
 # Build status
 
 Date: 2026-10-01
-Release candidate: 0.1.12
+Release candidate: 0.1.13
 Target: iPhone 7 (A10 / arm64), iOS 15.x, Dopamine rootless / ElleKit.
+
+## What changed from 0.1.12
+
+The native iPhone top status bar (carrier, Wi-Fi, clock, Do Not Disturb, rotation lock, battery) must stay gone the whole time Reader Lock is on, on every screen inside the reader. 0.1.12 still depended on MapleRead's per-screen `prefersStatusBarHidden` and has not been run on a phone. 0.1.13 does not return nil from `childViewControllerForStatusBarHidden`. Every view-controller subclass answers hidden, including classes that never implemented that method. SpringBoard forces the frontmost app scene's status bar hidden using selectors present on both the iOS 14 and iOS 17 dumps, and takes a status-bar assertion when that iOS 14-shaped initializer exists. The bottom time line is unchanged. This has not been run on a phone.
 
 ## What changed from 0.1.11
 
@@ -42,11 +46,11 @@ Once the chosen reader is actually in front, Reader Lock sets Powercuff's `Power
 
 `make clean package FINALPACKAGE=1` with Theos, the L1ghtmann iOS toolchain, and the iPhoneOS 15.6 SDK produces:
 
-`packages/com.quan.readerlock_0.1.12_iphoneos-arm64.deb`
+`packages/com.quan.readerlock_0.1.13_iphoneos-arm64.deb`
 
 `scripts/verify-deb.sh` then checks that package:
 
-- Debian architecture `iphoneos-arm64` (rootless), version 0.1.12
+- Debian architecture `iphoneos-arm64` (rootless), version 0.1.13
 - `ReaderLockSB.dylib` and `ReaderLockBooks.dylib` are arm64 Mach-O and have `LC_CODE_SIGNATURE`
 - the Mono, Color, and Use Maple Control Center bundles are present and signed the same way
 - every data-archive path is under `/var/jb`
