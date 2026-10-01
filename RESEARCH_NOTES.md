@@ -185,6 +185,10 @@ Private APIs are not contracts. These are the tests that determine whether a par
 
 `CCUIToggleModule` is the narrowest CCSupport interface on iOS 15. Mono and Color each enter in one tap. A third toggle, checked only while Reader Lock is off, stores `maple` or `books` in the preference plist. The session then locks that bundle id so a later tap cannot retarget the firewall.
 
+## Bottom time-line color vs MapleRead paper (0.1.15)
+
+The overlay used `UIColor.secondaryLabelColor`, which follows iOS light/dark. MapleRead's paper is an in-app theme (`Theme.textColor` / `Theme.backgroundColor`, plus `pageLabel` / `progressLabel`). A dark-mode phone therefore kept white status text on a white page. 0.1.15 copies those label or theme colors when they already contrast with the paper, otherwise inverts paper luminance (sepia counts as light). Chrome layout and MapleRead's `updateStatusBarAreaColor` / sepia setters refresh the color so a live theme switch does not wait for the minute timer. The page is not rendered to an image. Appear methods stay unwrapped.
+
 ## Build-environment note
 
 A functional `.deb` contains iOS Mach-O binaries and must be linked with an iOS-capable Apple/cctools linker and an iOS SDK. A generic Linux/Swift clang installation that can emit an arm64 Apple object file is not sufficient if its `ld64.lld` lacks iOS platform support. The included GitHub Actions workflow avoids that local-toolchain problem.

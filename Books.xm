@@ -409,6 +409,8 @@ static void RLSuppressStatusBarView(UIView *view) {
 
 @end
 
+static UIColor *RLBottomBarTextColor(void);
+
 @interface RLBottomBarController : UIViewController
 @property(nonatomic, strong) UILabel *statusLabel;
 @end
@@ -423,7 +425,7 @@ static void RLSuppressStatusBarView(UIView *view) {
 
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
     label.font = [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightMedium];
-    label.textColor = [UIColor secondaryLabelColor];
+    label.textColor = RLBottomBarTextColor();
     label.textAlignment = NSTextAlignmentCenter;
     label.numberOfLines = 1;
     label.userInteractionEnabled = NO;
@@ -511,7 +513,7 @@ static void RLUpdateBottomBarText(void) {
     RLPlaceBottomBarWindow();
     float level = [UIDevice currentDevice].batteryLevel;
     NSString *battery = level < 0 ? @"—" : [NSString stringWithFormat:@"%ld%%", (long)lroundf(level * 100.f)];
-    gBottomBarLabel.textColor = [UIColor secondaryLabelColor];
+    gBottomBarLabel.textColor = RLBottomBarTextColor();
     gBottomBarLabel.text = [NSString stringWithFormat:@"%@   •   %@   •   %@",
                             RLBottomBarTime(), RLBottomBarNetwork(), battery];
 }
@@ -1084,6 +1086,151 @@ static BOOL RLReadingScreenIsVisible(void) {
     return NO;
 }
 
+static BOOL RLColorRGBA(UIColor *color, CGFloat *r, CGFloat *g, CGFloat *b, CGFloat *a) {
+    if (!color) return NO;
+    UIColor *resolved = color;
+    if ([color respondsToSelector:@selector(resolvedColorWithTraitCollection:)]) {
+        UITraitCollection *traits = [UITraitCollection currentTraitCollection];
+        for (UIWindow *window in RLApplicationWindows()) {
+            if ([window isKindOfClass:[RLBottomBarWindow class]]) continue;
+            if (window.traitCollection) {
+                traits = window.traitCollection;
+                if (window.isKeyWindow) break;
+            }
+        }
+        resolved = [color resolvedColorWithTraitCollection:traits];
+    }
+    if ([resolved getRed:r green:g blue:b alpha:a]) return YES;
+    CGFloat white = 0;
+    if ([resolved getWhite:&white alpha:a]) {
+        *r = white;
+        *g = white;
+        *b = white;
+        return YES;
+    }
+    return NO;
+}
+
+static CGFloat RLColorLuminance(UIColor *color) {
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    if (!RLColorRGBA(color, &r, &g, &b, &a) || a < 0.25) return -1;
+    return (CGFloat)(0.2126 * r + 0.7152 * g + 0.0722 * b);
+}
+
+static UIColor *RLOpaqueColor(UIColor *color) {
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    if (!RLColorRGBA(color, &r, &g, &b, &a) || a < 0.4) return nil;
+    return [UIColor colorWithRed:r green:g blue:b alpha:1];
+}
+
+static UIColor *RLContrastOnLuminance(CGFloat luminance) {
+    if (luminance < 0) return nil;
+    if (luminance < 0.55) return [UIColor colorWithWhite:0.92 alpha:1];
+    return [UIColor colorWithWhite:0.22 alpha:1];
+}
+
+static UIColor *RLPickContrastingText(UIColor *text, UIColor *background) {
+    CGFloat textLum = RLColorLuminance(text);
+    CGFloat bgLum = RLColorLuminance(background);
+    if (textLum >= 0 && bgLum >= 0) {
+        CGFloat delta = textLum - bgLum;
+        if (delta < 0) delta = -delta;
+        if (delta >= 0.28) {
+            UIColor *opaque = RLOpaqueColor(text);
+            if (opaque) return opaque;
+        }
+    }
+    UIColor *fromBackground = RLContrastOnLuminance(bgLum);
+    if (fromBackground) return fromBackground;
+    return RLOpaqueColor(text);
+}
+
+static UIColor *RLViewPaperColor(UIView *view, NSInteger depth) {
+    if (!view || depth > 5 || view.hidden || view.alpha < 0.2) return nil;
+    NSString *name = NSStringFromClass(object_getClass(view));
+    if ([name hasPrefix:@"RLBottomBar"]) return nil;
+    UIColor *color = RLOpaqueColor(view.backgroundColor);
+    if (color) return color;
+    if (view.layer.backgroundColor) {
+        color = RLOpaqueColor([UIColor colorWithCGColor:view.layer.backgroundColor]);
+        if (color) return color;
+    }
+    if ([name containsString:@"WebView"] || [name containsString:@"PDF"]) return nil;
+    UIView *largest = nil;
+    CGFloat best = 0;
+    for (UIView *subview in view.subviews) {
+        if (subview.hidden || subview.alpha < 0.2) continue;
+        CGFloat area = CGRectGetWidth(subview.bounds) * CGRectGetHeight(subview.bounds);
+        if (area > best) {
+            best = area;
+            largest = subview;
+        }
+    }
+    return largest ? RLViewPaperColor(largest, depth + 1) : nil;
+}
+
+static UIColor *RLThemeObjectTextColor(id theme) {
+    if (!theme || [theme isKindOfClass:[UIColor class]] || [theme isKindOfClass:[UIView class]]) return nil;
+    return RLOpaqueColor(RLKVC(theme, "textColor"));
+}
+
+static UIColor *RLThemeObjectBackgroundColor(id theme) {
+    if (!theme || [theme isKindOfClass:[UIColor class]] || [theme isKindOfClass:[UIView class]]) return nil;
+    return RLOpaqueColor(RLKVC(theme, "backgroundColor"));
+}
+
+static UIColor *RLLabelTextColor(id view) {
+    if (![view isKindOfClass:[UIView class]] || !((UIView *)view).window) return nil;
+    if ([view isKindOfClass:[UILabel class]]) return RLOpaqueColor(((UILabel *)view).textColor);
+    if ([view isKindOfClass:[UITextView class]]) return RLOpaqueColor(((UITextView *)view).textColor);
+    return nil;
+}
+
+static UIColor *RLBottomBarTextColor(void) {
+    UIColor *text = nil;
+    UIColor *paper = nil;
+
+    for (UIViewController *vc = RLKeyFrontController(); vc; vc = vc.parentViewController) {
+        if (!RLIsReaderChromeController(vc)) continue;
+
+        const char *labelKeys[] = {"pageLabel", "progressLabel", "chapterLabel"};
+        for (size_t i = 0; i < sizeof(labelKeys) / sizeof(labelKeys[0]) && !text; i++) {
+            text = RLLabelTextColor(RLKVC(vc, labelKeys[i]));
+        }
+
+        id theme = RLKVC(vc, "currentTheme");
+        if (!theme) {
+            id night = RLKVC(vc, "nightTheme");
+            BOOL isNight = [night isKindOfClass:[NSNumber class]] && [night boolValue];
+            theme = RLKVC(vc, isNight ? "currentNightTheme" : "currentDayTheme");
+        }
+        if (!text) text = RLThemeObjectTextColor(theme);
+        if (!paper) paper = RLThemeObjectBackgroundColor(theme);
+        if (!paper && vc.isViewLoaded) paper = RLViewPaperColor(vc.view, 0);
+        if (!text) {
+            id night = RLKVC(vc, "nightTheme");
+            if ([night isKindOfClass:[NSNumber class]]) {
+                text = RLContrastOnLuminance([night boolValue] ? 0.08 : 0.92);
+            }
+        }
+        break;
+    }
+
+    if (!paper) {
+        for (UIWindow *window in RLApplicationWindows()) {
+            if ([window isKindOfClass:[RLBottomBarWindow class]]) continue;
+            paper = RLOpaqueColor(window.backgroundColor);
+            if (!paper && window.rootViewController.isViewLoaded) {
+                paper = RLViewPaperColor(window.rootViewController.view, 0);
+            }
+            if (paper) break;
+        }
+    }
+
+    UIColor *picked = RLPickContrastingText(text, paper);
+    return picked ?: [UIColor secondaryLabelColor];
+}
+
 static BOOL gBottomBarRefreshQueued = NO;
 
 static void RLQueueBottomBarRefresh(void) {
@@ -1339,10 +1486,9 @@ static void RLApplyReaderChrome(id controller) {
             RLLiftNamedFooter(vc, stripTop);
             RLLiftFooterTree(vc.view, stripTop, 0);
         }
-        if ((!gBottomBarWindow || gBottomBarWindow.hidden)
-            && RLIsOnFrontChain(vc)
-            && RLBookMarkerInWindow(vc)) {
-            RLQueueBottomBarRefresh();
+        if (RLIsOnFrontChain(vc) && RLBookMarkerInWindow(vc)) {
+            if (!gBottomBarWindow || gBottomBarWindow.hidden) RLQueueBottomBarRefresh();
+            else RLUpdateBottomBarText();
         }
     }
     gChromeDepth--;
@@ -1426,7 +1572,10 @@ static void RLHookChromeMethod(Class cls, SEL sel) {
         void (*original)(id, SEL) = (void (*)(id, SEL))method_getImplementation(found);
         IMP replacement = imp_implementationWithBlock(^void(id self) {
             original(self, sel);
-            if (RLBooksActive()) RLCollapseReaderTopBand(self);
+            if (RLBooksActive()) {
+                RLCollapseReaderTopBand(self);
+                RLUpdateBottomBarText();
+            }
         });
         method_setImplementation(found, replacement);
         [gHookedChromeMethods addObject:token];
@@ -1436,7 +1585,10 @@ static void RLHookChromeMethod(Class cls, SEL sel) {
         void (*original)(id, SEL, id) = (void (*)(id, SEL, id))method_getImplementation(found);
         IMP replacement = imp_implementationWithBlock(^void(id self, id value) {
             original(self, sel, value);
-            if (RLBooksActive()) RLCollapseReaderTopBand(self);
+            if (RLBooksActive()) {
+                RLCollapseReaderTopBand(self);
+                RLUpdateBottomBarText();
+            }
         });
         method_setImplementation(found, replacement);
         [gHookedChromeMethods addObject:token];

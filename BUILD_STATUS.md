@@ -1,8 +1,12 @@
 # Build status
 
 Date: 2026-10-01
-Release candidate: 0.1.14
+Release candidate: 0.1.15
 Target: iPhone 7 (A10 / arm64), iOS 15.x, Dopamine rootless / ElleKit.
+
+## What changed from 0.1.14
+
+On device, 0.1.14's bottom time line is visible on MapleRead's black theme and disappears on the white theme, because the text was always `secondaryLabelColor` (white while the phone is in dark mode). 0.1.15 picks the line color from the open book's page or progress text, or from the paper luminance, and refreshes it when MapleRead restyles that chrome. Appear methods are still not wrapped. The native top-bar hide is unchanged and still needs device confirmation. This has not been run on a phone.
 
 ## What changed from 0.1.13
 
@@ -50,11 +54,11 @@ Once the chosen reader is actually in front, Reader Lock sets Powercuff's `Power
 
 `make clean package FINALPACKAGE=1` with Theos, the L1ghtmann iOS toolchain, and the iPhoneOS 15.6 SDK produces:
 
-`packages/com.quan.readerlock_0.1.14_iphoneos-arm64.deb`
+`packages/com.quan.readerlock_0.1.15_iphoneos-arm64.deb`
 
 `scripts/verify-deb.sh` then checks that package:
 
-- Debian architecture `iphoneos-arm64` (rootless), version 0.1.14
+- Debian architecture `iphoneos-arm64` (rootless), version 0.1.15
 - `ReaderLockSB.dylib` and `ReaderLockBooks.dylib` are arm64 Mach-O and have `LC_CODE_SIGNATURE`
 - the Mono, Color, and Use Maple Control Center bundles are present and signed the same way
 - every data-archive path is under `/var/jb`
